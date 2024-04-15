@@ -1,0 +1,19 @@
+.{
+    .name = "github-checks-stats",
+    .version = "0.0.0",
+    .dependencies = .{
+        .args = .{
+            .url = "https://github.com/masterQ32/zig-args/archive/01d72b9a0128c474aeeb9019edd48605fa6d95f7.tar.gz",
+            .hash = "12208a1de366740d11de525db7289345949f5fd46527db3f89eecc7bb49b012c0732",
+        },
+        .s2s = .{
+            .url = "https://github.com/ziglibs/s2s/archive/b30205d5e9204899fb6d0fdf28d00ed4d18fe9c9.tar.gz",
+            .hash = "12202c39c98f05041f1052c268132669dbfcda87e4dbb0353cd84a6070924c8ac0e3",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
