@@ -43,3 +43,47 @@ pub fn clone(allocator: std.mem.Allocator, obj: anytype) CloneError!Cloned(@Type
     var stream = std.io.fixedBufferStream(serialized.items);
     return cloned(try s2s.deserializeAlloc(stream.reader(), Obj, allocator));
 }
+
+pub fn graphql(comptime T: type) []const u8 {
+    return graphqlPretty(T, "  ", 0);
+}
+
+pub fn graphqlPretty(comptime T: type, comptime indent: []const u8, indent_level: comptime_int) []const u8 {
+    const info = @typeInfo(T);
+    if (comptime info != .Struct) @compileError("cannot derive GraphQL from type \"" ++ @typeName(T) ++ "\"");
+
+    comptime var gql: []const u8 = "{\n";
+
+    inline for (info.Struct.fields) |field| {
+        gql = gql ++ indent ** (indent_level + 1) ++ field.name;
+
+        if (@typeInfo(field.type) == .Struct)
+            gql = gql ++ " " ++ comptime graphqlPretty(field.type, indent, indent_level + 1);
+
+        gql = gql ++ "\n";
+    }
+
+    return gql ++ indent ** indent_level ++ "}";
+}
+
+test graphql {
+    try std.testing.expectEqualStrings(
+        \\{
+        \\  foo
+        \\  bar {
+        \\    baz
+        \\    foobar {
+        \\      quux
+        \\    }
+        \\  }
+        \\}
+    , graphql(struct {
+        foo: u0,
+        bar: struct {
+            baz: u0,
+            foobar: struct {
+                quux: u0,
+            },
+        },
+    }));
+}

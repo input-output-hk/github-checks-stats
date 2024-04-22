@@ -50,11 +50,8 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
                     \\      after: $cursor
                     \\    ) {
                 ++ Page.gql ++
-                    \\      nodes {
-                    \\        id
-                    \\        number
-                    \\        title
-                    \\      }
+                    \\      nodes
+                ++ " " ++ comptime api.graphqlPretty(types.PullRequest, "  ", 3) ++ "\n" ++
                     \\    }
                     \\  }
                     \\}
@@ -136,11 +133,8 @@ pub fn fetchCommitsByPullRequestId(client: *Client, allocator: std.mem.Allocator
                     \\      ) {
                 ++ Page.gql ++
                     \\        nodes {
-                    \\          commit {
-                    \\            id
-                    \\            oid
-                    \\            messageHeadline
-                    \\          }
+                    \\          commit
+                ++ " " ++ comptime api.graphqlPretty(types.Commit, "  ", 5) ++ "\n" ++
                     \\        }
                     \\      }
                     \\    }
@@ -223,25 +217,8 @@ pub fn fetchCheckSuitesByCommitId(client: *Client, allocator: std.mem.Allocator,
                     \\        after: $cursor
                     \\      ) {
                 ++ Page.gql ++
-                    \\        nodes {
-                    \\          id
-                    \\          app {
-                    \\            name
-                    \\          }
-                    \\          branch {
-                    \\            prefix
-                    \\            name
-                    \\          }
-                    \\          creator {
-                    \\            name
-                    \\            login
-                    \\            company
-                    \\          }
-                    \\          conclusion
-                    \\          status
-                    \\          createdAt
-                    \\          updatedAt
-                    \\        }
+                    \\        nodes
+                ++ " " ++ comptime api.graphqlPretty(types.CheckSuite, "  ", 4) ++ "\n" ++
                     \\      }
                     \\    }
                     \\  }
@@ -321,12 +298,8 @@ pub fn fetchCheckRunsByCheckSuiteId(client: *Client, allocator: std.mem.Allocato
                     \\        after: $cursor
                     \\      ) {
                 ++ Page.gql ++
-                    \\        nodes {
-                    \\          id
-                    \\          name
-                    \\          startedAt
-                    \\          completedAt
-                    \\        }
+                    \\        nodes
+                ++ " " ++ comptime api.graphqlPretty(types.CheckRun, "  ", 4) ++ "\n" ++
                     \\      }
                     \\    }
                     \\  }
