@@ -2,6 +2,7 @@ pub const ID = []const u8;
 
 pub const PullRequest = struct {
     id: ID,
+    resourcePath: []const u8,
 
     number: usize,
     title: []const u8,
@@ -9,6 +10,7 @@ pub const PullRequest = struct {
 
 pub const Commit = struct {
     id: ID,
+    resourcePath: []const u8,
 
     oid: []const u8,
     messageHeadline: []const u8,
@@ -52,6 +54,7 @@ pub const CheckStatusState = enum {
 
 pub const CheckSuite = struct {
     id: ID,
+    resourcePath: []const u8,
 
     app: App,
     branch: ?Ref = null,
@@ -64,6 +67,7 @@ pub const CheckSuite = struct {
 
 pub const CheckRun = struct {
     id: ID,
+    resourcePath: []const u8,
 
     name: []const u8,
     startedAt: []const u8,

@@ -50,52 +50,36 @@ pub fn main() !void {
             break :repo .{ owner, name };
         };
 
-        const repo_fmt = "{s}/{s}";
-        const repo_fmt_args = .{ repo_owner, repo_name };
-
-        std.log.info(repo_fmt ++ ": scanning for pull requests…", repo_fmt_args);
+        std.log.info("/{s}/{s}: scanning for pull requests…", .{ repo_owner, repo_name });
 
         const prs = try api.queries.fetchPullRequestsByRepo(&client, allocator, repo_owner, repo_name);
         defer prs.deinit(allocator);
 
         for (prs.value) |pr| {
-            const pr_fmt = repo_fmt ++ "#{d}";
-            const pr_fmt_args = repo_fmt_args ++ .{pr.number};
-
-            std.log.info(pr_fmt ++ ": scanning for commits…", pr_fmt_args);
+            std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
 
             const commits = try api.queries.fetchCommitsByPullRequestId(&client, allocator, pr.id);
             defer commits.deinit(allocator);
 
             for (commits.value) |commit| {
-                const commit_fmt = pr_fmt ++ "@{s}";
-                const commit_fmt_args = pr_fmt_args ++ .{commit.oid};
-
-                std.log.info(commit_fmt ++ ": scanning for check suites…", commit_fmt_args);
+                std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
 
                 const check_suites = try api.queries.fetchCheckSuitesByCommitId(&client, allocator, commit.id);
                 defer check_suites.deinit(allocator);
 
                 for (check_suites.value) |check_suite| {
-                    const check_suite_fmt = commit_fmt ++ "!{s}";
-                    const check_suite_fmt_args = commit_fmt_args ++ .{check_suite.app.name};
-
                     if (check_suite.status != .COMPLETED) {
-                        std.log.info(check_suite_fmt ++ ": skipping (not completed)", check_suite_fmt_args);
+                        std.log.info("{s}: skipping (not completed)", .{check_suite.resourcePath});
                         continue;
                     }
 
-                    std.log.info(check_suite_fmt ++ ": scanning for check runs…", check_suite_fmt_args);
+                    std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
 
                     const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(&client, allocator, check_suite.id);
                     defer check_runs.deinit(allocator);
 
-                    for (check_runs.value) |check_run| {
-                        const check_run_fmt = check_suite_fmt ++ "?{s}";
-                        const check_run_fmt_args = check_suite_fmt_args ++ .{check_run.name};
-
-                        std.log.info(check_run_fmt ++ ": found.", check_run_fmt_args);
-                    }
+                    for (check_runs.value) |check_run|
+                        std.log.info("{s}: found.", .{check_run.resourcePath});
                 }
             }
         }
