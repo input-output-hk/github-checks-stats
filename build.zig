@@ -41,4 +41,5 @@ pub fn build(b: *std.Build) void {
 
 fn configureModule(b: *std.Build, module: *std.Build.Module, opts: anytype) void {
     module.addImport("args", b.dependency("args", opts).module("args"));
+    module.addImport("datetime", b.dependency("datetime", opts).module("zig-datetime"));
 }

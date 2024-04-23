@@ -92,7 +92,7 @@ pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.
 }
 
 pub fn graphql(comptime T: type) []const u8 {
-    return graphqlPretty(T, "  ", 0);
+    return graphqlPretty(T, "", 0);
 }
 
 pub fn graphqlPretty(comptime T: type, comptime indent: []const u8, indent_level: comptime_int) []const u8 {
@@ -102,7 +102,9 @@ pub fn graphqlPretty(comptime T: type, comptime indent: []const u8, indent_level
     comptime var gql: []const u8 = "{\n";
 
     inline for (info.Struct.fields) |field| {
-        gql = gql ++ indent ** (indent_level + 1) ++ field.name;
+        const field_indent_level = indent_level + 1;
+
+        gql = gql ++ indent ** field_indent_level ++ field.name;
 
         if (@as(?type, switch (@typeInfo(field.type)) {
             .Struct => field.type,
@@ -111,8 +113,15 @@ pub fn graphqlPretty(comptime T: type, comptime indent: []const u8, indent_level
             else
                 null,
             else => null,
-        })) |field_graphql_type|
-            gql = gql ++ " " ++ comptime graphqlPretty(field_graphql_type, indent, indent_level + 1);
+        })) |field_graphql_type| {
+            const field_gql: ?[]const u8 = comptime if (std.meta.hasFn(field_graphql_type, "graphql"))
+                field_graphql_type.graphql(indent, field_indent_level)
+            else
+                graphqlPretty(field_graphql_type, indent, field_indent_level);
+
+            if (field_gql) |f_gql|
+                gql = gql ++ " " ++ f_gql;
+        }
 
         gql = gql ++ "\n";
     }
@@ -120,7 +129,7 @@ pub fn graphqlPretty(comptime T: type, comptime indent: []const u8, indent_level
     return gql ++ indent ** indent_level ++ "}";
 }
 
-test graphql {
+test graphqlPretty {
     try std.testing.expectEqualStrings(
         \\{
         \\  foo
@@ -131,7 +140,7 @@ test graphql {
         \\    }
         \\  }
         \\}
-    , graphql(struct {
+    , graphqlPretty(struct {
         foo: u0,
         bar: struct {
             baz: u0,
@@ -139,5 +148,5 @@ test graphql {
                 quux: u0,
             },
         },
-    }));
+    }, "  ", 0));
 }

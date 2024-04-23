@@ -42,7 +42,7 @@ pub fn main() !void {
 
     const stdout = std.io.getStdOut().writer();
 
-    try stdout.print("repo_owner\trepo_name\tpr_number\tcommit_oid\tcheck_suite_app_name\tcheck_run_name\tcheck_run_started_at\tcheck_run_completed_at\n", .{});
+    try stdout.print("repo_owner\trepo_name\tpr_number\tcommit_oid\tcheck_suite_app_name\tcheck_run_name\tcheck_run_started_at\tcheck_run_completed_at\tcheck_run_duration_seconds\n", .{});
 
     for (options.positionals) |repo_full| {
         const repo_owner, const repo_name = repo: {
@@ -83,9 +83,11 @@ pub fn main() !void {
                     defer check_runs.deinit();
 
                     for (check_runs.value) |check_run| {
-                        std.log.info("{s}: found.", .{check_run.resourcePath});
+                        const check_run_seconds = check_run.completedAt.inner.sub(check_run.startedAt.inner).totalSeconds();
 
-                        try stdout.print("{s}\t{s}\t{d}\t{s}\t{s}\t{s}\t{s}\t{s}\n", .{
+                        std.log.info("{s}: {d}s", .{ check_run.resourcePath, check_run_seconds });
+
+                        try stdout.print("{s}\t{s}\t{d}\t{s}\t{s}\t{s}\t{}\t{}\t{d}\n", .{
                             repo_owner,
                             repo_name,
                             pr.number,
@@ -94,6 +96,7 @@ pub fn main() !void {
                             check_run.name,
                             check_run.startedAt,
                             check_run.completedAt,
+                            check_run_seconds,
                         });
                     }
                 }
