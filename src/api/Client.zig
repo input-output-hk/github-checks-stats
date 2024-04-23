@@ -75,7 +75,7 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
 
     std.log.debug("GitHub response (raw): {s}", .{response.items});
 
-    const parsed = try std.json.parseFromSlice(
+    const parsed = std.json.parseFromSlice(
         struct {
             data: ?Data = null,
             errors: []const std.json.Value = &.{},
@@ -86,7 +86,10 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
         allocator,
         response.items,
         .{ .ignore_unknown_fields = true },
-    );
+    ) catch |err| {
+        std.log.err("failed to parse response from GitHub: {s}", .{@errorName(err)});
+        return err;
+    };
     defer parsed.deinit();
 
     for (parsed.value.extensions.warnings) |warning| {
