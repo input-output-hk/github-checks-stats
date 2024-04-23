@@ -40,6 +40,10 @@ pub fn main() !void {
     );
     defer client.deinit();
 
+    const stdout = std.io.getStdOut().writer();
+
+    try stdout.print("repo_owner\trepo_name\tpr_number\tcommit_oid\tcheck_suite_app_name\tcheck_run_name\tcheck_run_started_at\tcheck_run_completed_at\n", .{});
+
     for (options.positionals) |repo_full| {
         const repo_owner, const repo_name = repo: {
             errdefer std.log.err("malformed repository \"{s}\", must be of form \"foo/bar\"", .{repo_full});
@@ -78,8 +82,20 @@ pub fn main() !void {
                     const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(&client, allocator, check_suite.id);
                     defer check_runs.deinit(allocator);
 
-                    for (check_runs.value) |check_run|
+                    for (check_runs.value) |check_run| {
                         std.log.info("{s}: found.", .{check_run.resourcePath});
+
+                        try stdout.print("{s}\t{s}\t{d}\t{s}\t{s}\t{s}\t{s}\t{s}\n", .{
+                            repo_owner,
+                            repo_name,
+                            pr.number,
+                            commit.oid,
+                            check_suite.app.name,
+                            check_run.name,
+                            check_run.startedAt,
+                            check_run.completedAt,
+                        });
+                    }
                 }
             }
         }
