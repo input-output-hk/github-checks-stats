@@ -57,19 +57,19 @@ pub fn main() !void {
         std.log.info("/{s}/{s}: scanning for pull requests…", .{ repo_owner, repo_name });
 
         const prs = try api.queries.fetchPullRequestsByRepo(&client, allocator, repo_owner, repo_name);
-        defer prs.deinit(allocator);
+        defer prs.deinit();
 
         for (prs.value) |pr| {
             std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
 
             const commits = try api.queries.fetchCommitsByPullRequestId(&client, allocator, pr.id);
-            defer commits.deinit(allocator);
+            defer commits.deinit();
 
             for (commits.value) |commit| {
                 std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
 
                 const check_suites = try api.queries.fetchCheckSuitesByCommitId(&client, allocator, commit.id);
-                defer check_suites.deinit(allocator);
+                defer check_suites.deinit();
 
                 for (check_suites.value) |check_suite| {
                     if (check_suite.status != .COMPLETED) {
@@ -80,7 +80,7 @@ pub fn main() !void {
                     std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
 
                     const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(&client, allocator, check_suite.id);
-                    defer check_runs.deinit(allocator);
+                    defer check_runs.deinit();
 
                     for (check_runs.value) |check_run| {
                         std.log.info("{s}: found.", .{check_run.resourcePath});

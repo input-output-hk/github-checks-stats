@@ -1,6 +1,5 @@
 const builtin = @import("builtin");
 const std = @import("std");
-const s2s = @import("s2s");
 
 pub const types = @import("api/types.zig");
 pub const queries = @import("api/queries.zig");
@@ -12,36 +11,84 @@ pub const peek_only = builtin.mode == .Debug;
 // maximum allowed by GitHub is 100
 pub const page_size = if (peek_only) 2 else 100;
 
-pub const CloneError = std.mem.Allocator.Error || error{ UnexpectedData, EndOfStream };
-
 pub fn Cloned(comptime T: type) type {
     return struct {
+        arena: *std.heap.ArenaAllocator,
         value: T,
 
-        pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
-            // `s2s.free()` needs a mutable pointer
-            // but I don't know why and cannot fathom a reason
-            // so let's just give it a pointer to a copy.
-            var copy = self;
-            s2s.free(allocator, T, &copy.value);
+        pub fn deinit(self: @This()) void {
+            const allocator = self.arena.child_allocator;
+            self.arena.deinit();
+            allocator.destroy(self.arena);
+        }
+
+        pub fn init(allocator: std.mem.Allocator) !@This() {
+            return .{
+                .arena = arena: {
+                    const arena_ptr = try allocator.create(std.heap.ArenaAllocator);
+                    errdefer allocator.destroy(arena_ptr);
+
+                    arena_ptr.* = std.heap.ArenaAllocator.init(allocator);
+
+                    break :arena arena_ptr;
+                },
+                .value = undefined,
+            };
         }
     };
 }
 
-pub fn cloned(value: anytype) Cloned(@TypeOf(value)) {
-    return .{ .value = value };
+pub fn clone(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.Error!Cloned(@TypeOf(obj)) {
+    var cloned = try Cloned(@TypeOf(obj)).init(allocator);
+    errdefer cloned.deinit();
+
+    cloned.value = try cloneLeaky(cloned.arena.allocator(), obj);
+
+    return cloned;
 }
 
-pub fn clone(allocator: std.mem.Allocator, obj: anytype) CloneError!Cloned(@TypeOf(obj)) {
-    var serialized = std.ArrayListUnmanaged(u8){};
-    defer serialized.deinit(allocator);
-
+pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.Error!@TypeOf(obj) {
     const Obj = @TypeOf(obj);
-
-    try s2s.serialize(serialized.writer(allocator), Obj, obj);
-
-    var stream = std.io.fixedBufferStream(serialized.items);
-    return cloned(try s2s.deserializeAlloc(stream.reader(), Obj, allocator));
+    switch (@typeInfo(Obj)) {
+        .Pointer => |pointer| switch (pointer.size) {
+            .One, .C => {
+                const ptr = try allocator.create(pointer.child);
+                ptr.* = try cloneLeaky(allocator, obj.*);
+                return ptr;
+            },
+            .Slice => {
+                const slice = try allocator.alloc(pointer.child, obj.len);
+                for (slice, obj) |*dst, src|
+                    dst.* = try cloneLeaky(allocator, src);
+                return slice;
+            },
+            .Many => @compileError("cannot clone many-item pointer"),
+        },
+        .Array => {
+            const array: Obj = undefined;
+            for (&array, obj) |*dst, src|
+                dst.* = try cloneLeaky(allocator, src);
+            return array;
+        },
+        .Optional => return if (obj) |child| @as(Obj, try cloneLeaky(allocator, child)) else null,
+        .Int, .Float, .Vector, .Enum, .Bool => return obj,
+        .Union => {
+            const active_tag = std.meta.activeTag(obj);
+            const active_tag_name = @tagName(active_tag);
+            const active = @field(obj, active_tag_name);
+            return @unionInit(Obj, active_tag_name, try cloneLeaky(allocator, active));
+        },
+        .Struct => |strukt| {
+            var cloned: Obj = undefined;
+            inline for (strukt.fields) |field|
+                @field(cloned, field.name) = try cloneLeaky(allocator, @field(obj, field.name));
+            return cloned;
+        },
+        else => if (@bitSizeOf(Obj) == 0)
+            return undefined
+        else
+            @compileError("cannot clone comptime-only type " ++ @typeName(Obj)),
+    }
 }
 
 pub fn graphql(comptime T: type) []const u8 {
@@ -57,8 +104,15 @@ pub fn graphqlPretty(comptime T: type, comptime indent: []const u8, indent_level
     inline for (info.Struct.fields) |field| {
         gql = gql ++ indent ** (indent_level + 1) ++ field.name;
 
-        if (@typeInfo(field.type) == .Struct)
-            gql = gql ++ " " ++ comptime graphqlPretty(field.type, indent, indent_level + 1);
+        if (@as(?type, switch (@typeInfo(field.type)) {
+            .Struct => field.type,
+            .Optional => |optional| if (@typeInfo(optional.child) == .Struct)
+                optional.child
+            else
+                null,
+            else => null,
+        })) |field_graphql_type|
+            gql = gql ++ " " ++ comptime graphqlPretty(field_graphql_type, indent, indent_level + 1);
 
         gql = gql ++ "\n";
     }

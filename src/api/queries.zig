@@ -6,23 +6,22 @@ const types = api.types;
 const Client = api.Client;
 
 const clone = api.clone;
-const CloneError = api.CloneError;
+const cloneLeaky = api.cloneLeaky;
 const Cloned = api.Cloned;
-const cloned = api.cloned;
 
 pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, owner: []const u8, name: []const u8) !Cloned([]const types.PullRequest) {
+    var cloned = try Cloned([]const types.PullRequest).init(allocator);
+    errdefer cloned.deinit();
+    const cloned_allocator = cloned.arena.allocator();
+
     var prs = std.ArrayListUnmanaged(types.PullRequest){};
-    errdefer {
-        for (prs.items) |pr| cloned(pr).deinit(allocator);
-        prs.deinit(allocator);
-    }
 
     const Ctx = struct {
         client: *Client,
 
+        cloned_allocator: std.mem.Allocator,
         prs: *std.ArrayListUnmanaged(types.PullRequest),
 
-        allocator: std.mem.Allocator,
         owner: []const u8,
         name: []const u8,
 
@@ -72,11 +71,11 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
                     },
                 },
             }, payload);
-            defer response.deinit(page_allocator);
+            defer response.deinit();
 
-            try ctx.prs.ensureUnusedCapacity(ctx.allocator, response.value.repository.pullRequests.nodes.len);
+            try ctx.prs.ensureUnusedCapacity(ctx.cloned_allocator, response.value.repository.pullRequests.nodes.len);
             for (response.value.repository.pullRequests.nodes) |pr|
-                ctx.prs.addOneAssumeCapacity().* = (try clone(ctx.allocator, pr)).value;
+                ctx.prs.addOneAssumeCapacity().* = try cloneLeaky(ctx.cloned_allocator, pr);
 
             return clone(page_allocator, response.value.repository.pullRequests.pageInfo);
         }
@@ -90,29 +89,30 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
         Ctx.queryPage,
         .{
             .client = client,
+            .cloned_allocator = cloned_allocator,
             .prs = &prs,
-            .allocator = allocator,
             .owner = owner,
             .name = name,
         },
     );
 
-    return Cloned([]const types.PullRequest){ .value = try prs.toOwnedSlice(allocator) };
+    cloned.value = try prs.toOwnedSlice(cloned_allocator);
+    return cloned;
 }
 
 pub fn fetchCommitsByPullRequestId(client: *Client, allocator: std.mem.Allocator, id: []const u8) !Cloned([]const types.Commit) {
+    var cloned = try Cloned([]const types.Commit).init(allocator);
+    errdefer cloned.deinit();
+    const cloned_allocator = cloned.arena.allocator();
+
     var commits = std.ArrayListUnmanaged(types.Commit){};
-    errdefer {
-        for (commits.items) |commit| cloned(commit).deinit(allocator);
-        commits.deinit(allocator);
-    }
 
     const Ctx = struct {
         client: *Client,
 
+        cloned_allocator: std.mem.Allocator,
         commits: *std.ArrayListUnmanaged(types.Commit),
 
-        allocator: std.mem.Allocator,
         id: []const u8,
 
         const Error = Client.QueryError;
@@ -158,11 +158,11 @@ pub fn fetchCommitsByPullRequestId(client: *Client, allocator: std.mem.Allocator
                     },
                 },
             }, payload);
-            defer response.deinit(page_allocator);
+            defer response.deinit();
 
-            try ctx.commits.ensureUnusedCapacity(ctx.allocator, response.value.node.commits.nodes.len);
+            try ctx.commits.ensureUnusedCapacity(ctx.cloned_allocator, response.value.node.commits.nodes.len);
             for (response.value.node.commits.nodes) |node|
-                ctx.commits.addOneAssumeCapacity().* = (try clone(ctx.allocator, node.commit)).value;
+                ctx.commits.addOneAssumeCapacity().* = try cloneLeaky(ctx.cloned_allocator, node.commit);
 
             return clone(page_allocator, response.value.node.commits.pageInfo);
         }
@@ -176,28 +176,29 @@ pub fn fetchCommitsByPullRequestId(client: *Client, allocator: std.mem.Allocator
         Ctx.queryPage,
         .{
             .client = client,
+            .cloned_allocator = cloned_allocator,
             .commits = &commits,
-            .allocator = allocator,
             .id = id,
         },
     );
 
-    return Cloned([]const types.Commit){ .value = try commits.toOwnedSlice(allocator) };
+    cloned.value = try commits.toOwnedSlice(cloned_allocator);
+    return cloned;
 }
 
 pub fn fetchCheckSuitesByCommitId(client: *Client, allocator: std.mem.Allocator, id: []const u8) !Cloned([]const types.CheckSuite) {
+    var cloned = try Cloned([]const types.CheckSuite).init(allocator);
+    errdefer cloned.deinit();
+    const cloned_allocator = cloned.arena.allocator();
+
     var check_suites = std.ArrayListUnmanaged(types.CheckSuite){};
-    errdefer {
-        for (check_suites.items) |check_suite| cloned(check_suite).deinit(allocator);
-        check_suites.deinit(allocator);
-    }
 
     const Ctx = struct {
         client: *Client,
 
+        cloned_allocator: std.mem.Allocator,
         check_suites: *std.ArrayListUnmanaged(types.CheckSuite),
 
-        allocator: std.mem.Allocator,
         id: []const u8,
 
         const Error = Client.QueryError;
@@ -239,11 +240,11 @@ pub fn fetchCheckSuitesByCommitId(client: *Client, allocator: std.mem.Allocator,
                     },
                 },
             }, payload);
-            defer response.deinit(page_allocator);
+            defer response.deinit();
 
-            try ctx.check_suites.ensureUnusedCapacity(ctx.allocator, response.value.node.checkSuites.nodes.len);
+            try ctx.check_suites.ensureUnusedCapacity(ctx.cloned_allocator, response.value.node.checkSuites.nodes.len);
             for (response.value.node.checkSuites.nodes) |check_suite|
-                ctx.check_suites.addOneAssumeCapacity().* = (try clone(ctx.allocator, check_suite)).value;
+                ctx.check_suites.addOneAssumeCapacity().* = try cloneLeaky(ctx.cloned_allocator, check_suite);
 
             return clone(page_allocator, response.value.node.checkSuites.pageInfo);
         }
@@ -257,28 +258,29 @@ pub fn fetchCheckSuitesByCommitId(client: *Client, allocator: std.mem.Allocator,
         Ctx.queryPage,
         .{
             .client = client,
+            .cloned_allocator = cloned_allocator,
             .check_suites = &check_suites,
-            .allocator = allocator,
             .id = id,
         },
     );
 
-    return Cloned([]const types.CheckSuite){ .value = try check_suites.toOwnedSlice(allocator) };
+    cloned.value = try check_suites.toOwnedSlice(cloned_allocator);
+    return cloned;
 }
 
 pub fn fetchCheckRunsByCheckSuiteId(client: *Client, allocator: std.mem.Allocator, id: []const u8) !Cloned([]const types.CheckRun) {
+    var cloned = try Cloned([]const types.CheckRun).init(allocator);
+    errdefer cloned.deinit();
+    const cloned_allocator = cloned.arena.allocator();
+
     var check_runs = std.ArrayListUnmanaged(types.CheckRun){};
-    errdefer {
-        for (check_runs.items) |check_run| cloned(check_run).deinit(allocator);
-        check_runs.deinit(allocator);
-    }
 
     const Ctx = struct {
         client: *Client,
 
+        cloned_allocator: std.mem.Allocator,
         check_runs: *std.ArrayListUnmanaged(types.CheckRun),
 
-        allocator: std.mem.Allocator,
         id: []const u8,
 
         const Error = Client.QueryError;
@@ -320,11 +322,11 @@ pub fn fetchCheckRunsByCheckSuiteId(client: *Client, allocator: std.mem.Allocato
                     },
                 },
             }, payload);
-            defer response.deinit(page_allocator);
+            defer response.deinit();
 
-            try ctx.check_runs.ensureUnusedCapacity(ctx.allocator, response.value.node.checkRuns.nodes.len);
+            try ctx.check_runs.ensureUnusedCapacity(ctx.cloned_allocator, response.value.node.checkRuns.nodes.len);
             for (response.value.node.checkRuns.nodes) |check_run|
-                ctx.check_runs.addOneAssumeCapacity().* = (try clone(ctx.allocator, check_run)).value;
+                ctx.check_runs.addOneAssumeCapacity().* = try cloneLeaky(ctx.cloned_allocator, check_run);
 
             return clone(page_allocator, response.value.node.checkRuns.pageInfo);
         }
@@ -338,11 +340,12 @@ pub fn fetchCheckRunsByCheckSuiteId(client: *Client, allocator: std.mem.Allocato
         Ctx.queryPage,
         .{
             .client = client,
+            .cloned_allocator = cloned_allocator,
             .check_runs = &check_runs,
-            .allocator = allocator,
             .id = id,
         },
     );
 
-    return Cloned([]const types.CheckRun){ .value = try check_runs.toOwnedSlice(allocator) };
+    cloned.value = try check_runs.toOwnedSlice(cloned_allocator);
+    return cloned;
 }

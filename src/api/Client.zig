@@ -48,7 +48,6 @@ pub const QueryError =
     std.http.Client.Request.ReadError ||
     std.http.Client.Request.FinishError ||
     std.json.ParseError(std.json.Scanner) ||
-    api.CloneError ||
     error{ StreamTooLong, QueryFailed };
 
 pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, payload: []const u8) QueryError!api.Cloned(Data) {
@@ -124,16 +123,16 @@ pub fn paginate(
     var page: ?api.Cloned(Page) = null;
     while (if (page) |p| p.value.hasNextPage else true) {
         const next_page = try func(ctx, allocator, if (page) |p| p.value else null);
-        errdefer next_page.deinit(allocator);
+        errdefer next_page.deinit();
 
-        if (page) |*p| p.deinit(allocator);
+        if (page) |*p| p.deinit();
         page = next_page;
 
         if (api.peek_only) {
             if (page.?.value.hasNextPage) std.log.debug("more pages available but not fetching to avoid exhausting GitHub rate limit", .{});
             page.?.value.hasNextPage = false;
         }
-    } else page.?.deinit(allocator);
+    } else page.?.deinit();
 }
 
 pub const PagingDirection = enum { forward, backward, both };
