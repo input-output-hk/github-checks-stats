@@ -110,7 +110,7 @@ pub const CheckSuite = struct {
 
     app: App,
     branch: ?Ref = null,
-    creator: User,
+    creator: ?User = null,
     conclusion: ?CheckConclusionState = null,
     status: CheckStatusState,
     createdAt: DateTime,
