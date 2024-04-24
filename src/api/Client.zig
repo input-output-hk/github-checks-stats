@@ -54,24 +54,42 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
     var response = std.ArrayList(u8).init(allocator);
     defer response.deinit();
 
-    const result = try self.client.fetch(.{
-        .headers = .{
-            .authorization = if (self.authorization) |authorization| .{ .override = authorization } else .default,
-            .user_agent = if (self.user_agent) |user_agent| .{ .override = user_agent } else .default,
-        },
-        .extra_headers = &.{
-            // https://github.blog/2021-11-16-graphql-global-id-migration-update/
-            .{ .name = "X-Github-Next-Global-ID", .value = "1" },
-        },
-        .method = .POST,
-        .location = .{ .uri = self.endpoint },
-        .response_storage = .{ .dynamic = &response },
-        .payload = payload,
-    });
-    if (result.status != .ok) {
-        std.log.err("query failed with code {s}: {s}", .{ @tagName(result.status), response.items });
-        return error.QueryFailed;
-    }
+    const max_attempts = 5;
+    for (1..max_attempts + 1) |attempt| {
+        response.clearRetainingCapacity();
+
+        const result = try self.client.fetch(.{
+            .headers = .{
+                .authorization = if (self.authorization) |authorization| .{ .override = authorization } else .default,
+                .user_agent = if (self.user_agent) |user_agent| .{ .override = user_agent } else .default,
+            },
+            .extra_headers = &.{
+                // https://github.blog/2021-11-16-graphql-global-id-migration-update/
+                .{ .name = "X-Github-Next-Global-ID", .value = "1" },
+            },
+            .method = .POST,
+            .location = .{ .uri = self.endpoint },
+            .response_storage = .{ .dynamic = &response },
+            .payload = payload,
+        });
+
+        if (result.status == .ok) break;
+
+        const retry = result.status.class() == .server_error and attempt != max_attempts;
+
+        const msg_fmt = "query failed with code {d} ({s}){s}\n{s}";
+        const msg_fmt_args = .{
+            @intFromEnum(result.status),
+            result.status.phrase() orelse "unknown",
+            if (retry) ", retrying…" else "",
+            response.items,
+        };
+
+        if (retry)
+            std.log.warn(msg_fmt, msg_fmt_args)
+        else
+            std.log.err(msg_fmt, msg_fmt_args);
+    } else return error.QueryFailed;
 
     std.log.debug("GitHub response (raw): {s}", .{response.items});
 
