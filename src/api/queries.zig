@@ -26,7 +26,7 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
         name: []const u8,
 
         const Error = Client.QueryError;
-        const Page = Client.PageInfo(.forward);
+        const Page = Client.PageInfo(.backward);
 
         fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
             const payload = try std.json.stringifyAlloc(page_allocator, .{
@@ -41,12 +41,12 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
                     \\    name: $name
                     \\  ) {
                     \\    pullRequests(
-                ++ std.fmt.comptimePrint("first: {d}\n", .{api.page_size}) ++
+                ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
                     \\      orderBy: {
                     \\        field: CREATED_AT
                     \\        direction: ASC
                     \\      }
-                    \\      after: $cursor
+                    \\      before: $cursor
                     \\    ) {
                 ++ Page.gql ++
                     \\      nodes
@@ -116,7 +116,7 @@ pub fn fetchCommitsByPullRequestId(client: *Client, allocator: std.mem.Allocator
         id: []const u8,
 
         const Error = Client.QueryError;
-        const Page = Client.PageInfo(.forward);
+        const Page = Client.PageInfo(.backward);
 
         fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
             const payload = try std.json.stringifyAlloc(page_allocator, .{
@@ -128,8 +128,8 @@ pub fn fetchCommitsByPullRequestId(client: *Client, allocator: std.mem.Allocator
                     \\  node(id: $id) {
                     \\    ... on PullRequest {
                     \\      commits(
-                ++ std.fmt.comptimePrint("first: {d}\n", .{api.page_size}) ++
-                    \\        after: $cursor
+                ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
+                    \\        before: $cursor
                     \\      ) {
                 ++ Page.gql ++
                     \\        nodes {
@@ -202,7 +202,7 @@ pub fn fetchCheckSuitesByCommitId(client: *Client, allocator: std.mem.Allocator,
         id: []const u8,
 
         const Error = Client.QueryError;
-        const Page = Client.PageInfo(.forward);
+        const Page = Client.PageInfo(.backward);
 
         fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
             const payload = try std.json.stringifyAlloc(page_allocator, .{
@@ -214,8 +214,8 @@ pub fn fetchCheckSuitesByCommitId(client: *Client, allocator: std.mem.Allocator,
                     \\  node(id: $id) {
                     \\    ... on Commit {
                     \\      checkSuites(
-                ++ std.fmt.comptimePrint("first: {d}\n", .{api.page_size}) ++
-                    \\        after: $cursor
+                ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
+                    \\        before: $cursor
                     \\      ) {
                 ++ Page.gql ++
                     \\        nodes
@@ -284,7 +284,7 @@ pub fn fetchCheckRunsByCheckSuiteId(client: *Client, allocator: std.mem.Allocato
         id: []const u8,
 
         const Error = Client.QueryError;
-        const Page = Client.PageInfo(.forward);
+        const Page = Client.PageInfo(.backward);
 
         fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
             const payload = try std.json.stringifyAlloc(page_allocator, .{
@@ -296,8 +296,8 @@ pub fn fetchCheckRunsByCheckSuiteId(client: *Client, allocator: std.mem.Allocato
                     \\  node(id: $id) {
                     \\    ... on CheckSuite {
                     \\      checkRuns(
-                ++ std.fmt.comptimePrint("first: {d}\n", .{api.page_size}) ++
-                    \\        after: $cursor
+                ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
+                    \\        before: $cursor
                     \\      ) {
                 ++ Page.gql ++
                     \\        nodes
