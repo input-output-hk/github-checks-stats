@@ -58,7 +58,7 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
                 .variables = .{
                     .owner = ctx.owner,
                     .name = ctx.name,
-                    .cursor = if (page) |p| p.endCursor else null,
+                    .cursor = if (page) |p| p.followingCursor() else null,
                 },
             }, .{});
             defer page_allocator.free(payload);
@@ -143,7 +143,7 @@ pub fn fetchCommitsByPullRequestId(client: *Client, allocator: std.mem.Allocator
                 ,
                 .variables = .{
                     .id = ctx.id,
-                    .cursor = if (page) |p| p.endCursor else null,
+                    .cursor = if (page) |p| p.followingCursor() else null,
                 },
             }, .{});
             defer page_allocator.free(payload);
@@ -227,7 +227,7 @@ pub fn fetchCheckSuitesByCommitId(client: *Client, allocator: std.mem.Allocator,
                 ,
                 .variables = .{
                     .id = ctx.id,
-                    .cursor = if (page) |p| p.endCursor else null,
+                    .cursor = if (page) |p| p.followingCursor() else null,
                 },
             }, .{});
             defer page_allocator.free(payload);
@@ -309,7 +309,7 @@ pub fn fetchCheckRunsByCheckSuiteId(client: *Client, allocator: std.mem.Allocato
                 ,
                 .variables = .{
                     .id = ctx.id,
-                    .cursor = if (page) |p| p.endCursor else null,
+                    .cursor = if (page) |p| p.followingCursor() else null,
                 },
             }, .{});
             defer page_allocator.free(payload);

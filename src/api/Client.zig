@@ -117,14 +117,14 @@ pub fn paginate(
     allocator: std.mem.Allocator,
     comptime Ctx: type,
     comptime Errors: type,
-    comptime direction: PagingDirection,
+    comptime direction: PaginateDirection,
     /// Must return a page that was `clone()`d with the given allocator.
     func: fn (Ctx, std.mem.Allocator, ?PageInfo(direction)) Errors!api.Cloned(PageInfo(direction)),
     ctx: Ctx,
 ) Errors!void {
     const Page = PageInfo(direction);
     var page: ?api.Cloned(Page) = null;
-    while (if (page) |p| p.value.hasNextPage else true) {
+    while (if (page) |p| p.value.hasFollowingPage() else true) {
         const next_page = try func(ctx, allocator, if (page) |p| p.value else null);
         errdefer next_page.deinit();
 
@@ -132,16 +132,16 @@ pub fn paginate(
         page = next_page;
 
         if (api.peek_only) {
-            if (page.?.value.hasNextPage) std.log.debug("more pages available but not fetching to avoid exhausting GitHub rate limit", .{});
-            page.?.value.hasNextPage = false;
+            if (page.?.value.hasFollowingPage()) std.log.debug("more pages available but not fetching to avoid exhausting GitHub rate limit", .{});
+            page.?.value.hasFollowingPagePtr().* = false;
         }
     } else page.?.deinit();
 }
 
-pub const PagingDirection = enum { forward, backward, both };
+pub const PaginateDirection = enum { forward, backward, both };
 
-pub fn PageInfo(comptime paging_direction: PagingDirection) type {
-    const has_forward, const has_backward = switch (paging_direction) {
+pub fn PageInfo(comptime paginate_direction: PaginateDirection) type {
+    const has_forward, const has_backward = switch (paginate_direction) {
         .forward => .{ true, false },
         .backward => .{ false, true },
         .both => .{ true, true },
@@ -154,7 +154,7 @@ pub fn PageInfo(comptime paging_direction: PagingDirection) type {
         startCursor: if (has_backward) ?[]const u8 else void,
         hasPreviousPage: if (has_backward) bool else void,
 
-        pub const direction = paging_direction;
+        pub const direction = paginate_direction;
 
         pub const gql =
             \\pageInfo {
@@ -163,6 +163,27 @@ pub fn PageInfo(comptime paging_direction: PagingDirection) type {
             (if (has_backward) "startCursor hasPreviousPage" else "") ++
             \\}
         ;
+
+        pub fn hasFollowingPagePtr(self: *@This()) *bool {
+            return switch (direction) {
+                .forward => &self.hasNextPage,
+                .backward => &self.hasPreviousPage,
+                .both => @compileError("bi-directional pagination does not have an unambigous following page"),
+            };
+        }
+
+        pub fn hasFollowingPage(self: @This()) bool {
+            var copy = self;
+            return copy.hasFollowingPagePtr().*;
+        }
+
+        pub fn followingCursor(self: @This()) ?[]const u8 {
+            return switch (direction) {
+                .forward => self.endCursor,
+                .backward => self.startCursor,
+                .both => @compileError("bi-directional pagination does not have an unambigous following cursor"),
+            };
+        }
 
         // skip `void` fields because otherwise they cause an error
 
