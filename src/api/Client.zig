@@ -55,7 +55,7 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
     defer response.deinit();
 
     const max_attempts = 5;
-    for (1..max_attempts + 1) |attempt| {
+    attempts: for (1..max_attempts + 1) |attempt| {
         response.clearRetainingCapacity();
 
         const result = try self.client.fetch(.{
@@ -73,63 +73,114 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
             .payload = payload,
         });
 
-        if (result.status == .ok) break;
+        const attempts_exceeded = attempt == max_attempts;
 
-        const retry = result.status.class() == .server_error and attempt != max_attempts;
+        if (result.status != .ok) {
+            const retry = result.status.class() == .server_error and !attempts_exceeded;
 
-        const msg_fmt = "query failed with code {d} ({s}){s}\n{s}";
-        const msg_fmt_args = .{
-            @intFromEnum(result.status),
-            result.status.phrase() orelse "unknown",
-            if (retry) ", retrying…" else "",
+            const msg_fmt = "query failed with code {d} ({s}){s}\n{s}";
+            const msg_fmt_args = .{
+                @intFromEnum(result.status),
+                result.status.phrase() orelse "unknown",
+                if (retry) ", retrying…" else "",
+                response.items,
+            };
+
+            if (retry) {
+                std.log.warn(msg_fmt, msg_fmt_args);
+                continue;
+            } else {
+                std.log.err(msg_fmt, msg_fmt_args);
+                break;
+            }
+        }
+
+        std.log.debug("GitHub response (raw): {s}", .{response.items});
+
+        const parsed = std.json.parseFromSlice(
+            struct {
+                data: ?Data = null,
+                errors: []const ResultError = &.{},
+                extensions: struct {
+                    warnings: []const std.json.Value = &.{},
+                } = .{},
+            },
+            allocator,
             response.items,
+            .{ .ignore_unknown_fields = true },
+        ) catch |err| {
+            std.log.err("failed to parse response from GitHub: {s}", .{@errorName(err)});
+            return err;
         };
+        defer parsed.deinit();
 
-        if (retry)
-            std.log.warn(msg_fmt, msg_fmt_args)
-        else
-            std.log.err(msg_fmt, msg_fmt_args);
-    } else return error.QueryFailed;
+        for (parsed.value.extensions.warnings) |warning| {
+            const warning_json = try std.json.stringifyAlloc(allocator, warning, .{ .whitespace = .indent_tab });
+            defer allocator.free(warning_json);
 
-    std.log.debug("GitHub response (raw): {s}", .{response.items});
+            std.log.warn("GitHub responded with warning: {s}", .{warning_json});
+        }
 
-    const parsed = std.json.parseFromSlice(
-        struct {
-            data: ?Data = null,
-            errors: []const std.json.Value = &.{},
-            extensions: struct {
-                warnings: []const std.json.Value = &.{},
-            } = .{},
-        },
-        allocator,
-        response.items,
-        .{ .ignore_unknown_fields = true },
-    ) catch |err| {
-        std.log.err("failed to parse response from GitHub: {s}", .{@errorName(err)});
-        return err;
-    };
-    defer parsed.deinit();
+        for (parsed.value.errors) |err| {
+            const err_json = try std.json.stringifyAlloc(allocator, err, .{ .whitespace = .indent_tab });
+            defer allocator.free(err_json);
 
-    for (parsed.value.extensions.warnings) |warning| {
-        const warning_json = try std.json.stringifyAlloc(allocator, warning, .{ .whitespace = .indent_tab });
-        defer allocator.free(warning_json);
+            std.log.err("GitHub responded with error: {s}", .{err_json});
+        }
+        for (parsed.value.errors) |err| {
+            if (err.locations != null or
+                err.path != null) continue;
 
-        std.log.warn("GitHub responded with warning: {s}", .{warning_json});
+            if (std.ascii.indexOfIgnoreCase(err.message, "error") != null) continue :attempts;
+        }
+        if (parsed.value.errors.len != 0) break;
+
+        if (parsed.value.data) |data| return api.clone(allocator, data);
+
+        break;
     }
 
-    for (parsed.value.errors) |err| {
-        const err_json = try std.json.stringifyAlloc(allocator, err, .{ .whitespace = .indent_tab });
-        defer allocator.free(err_json);
-
-        std.log.err("GitHub responded with error: {s}", .{err_json});
-    }
-    if (parsed.value.errors.len != 0) return error.QueryFailed;
-
-    return if (parsed.value.data) |data|
-        try api.clone(allocator, data)
-    else
-        error.QueryFailed;
+    return error.QueryFailed;
 }
+
+/// https://spec.graphql.org/October2021/#sec-Errors.Error-result-format
+const ResultError = struct {
+    message: []const u8,
+    locations: ?[]const Location = null,
+    path: ?[]const PathSegment = null,
+
+    pub const Location = struct {
+        line: usize,
+        column: usize,
+    };
+
+    pub const PathSegment = union(enum) {
+        key: []const u8,
+        index: usize,
+
+        pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+            return switch (try source.peekNextTokenType()) {
+                .number => .{ .index = try std.json.innerParse(std.meta.fieldInfo(@This(), .index).type, allocator, source, options) },
+                .string => .{ .key = try std.json.innerParse(std.meta.fieldInfo(@This(), .key).type, allocator, source, options) },
+                else => error.UnexpectedToken,
+            };
+        }
+
+        pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
+            return switch (source) {
+                .integer => |value| .{ .index = value },
+                .string => |value| .{ .key = value },
+                else => error.UnexpectedToken,
+            };
+        }
+
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            switch (self) {
+                inline else => |value| try jw.write(value),
+            }
+        }
+    };
+};
 
 pub fn paginate(
     allocator: std.mem.Allocator,
