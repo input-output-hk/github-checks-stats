@@ -48,7 +48,7 @@ pub const QueryError =
     std.http.Client.Request.ReadError ||
     std.http.Client.Request.FinishError ||
     std.json.ParseError(std.json.Scanner) ||
-    error{ StreamTooLong, QueryFailed };
+    error{ StreamTooLong, QueryFailed, RateLimited };
 
 pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, payload: []const u8) QueryError!api.Cloned(Data) {
     var response = std.ArrayList(u8).init(allocator);
@@ -127,6 +127,8 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
 
             std.log.err("GitHub responded with error: {s}", .{err_json});
         }
+        for (parsed.value.errors) |err|
+            if (if (err.type) |t| t == .RATE_LIMITED else false) return error.RateLimited;
         for (parsed.value.errors) |err| {
             if (err.locations != null or
                 err.path != null) continue;
@@ -148,6 +150,9 @@ const ResultError = struct {
     message: []const u8,
     locations: ?[]const Location = null,
     path: ?[]const PathSegment = null,
+
+    /// non-standard
+    type: ?Type,
 
     pub const Location = struct {
         line: usize,
@@ -178,6 +183,45 @@ const ResultError = struct {
             switch (self) {
                 inline else => |value| try jw.write(value),
             }
+        }
+    };
+
+    pub const Type = union(enum) {
+        RATE_LIMITED,
+        _: []const u8,
+
+        const Tag = std.meta.Tag(@This());
+
+        fn fromString(str: []const u8) @This() {
+            inline for (std.meta.fields(@This())) |field| {
+                comptime if (std.mem.eql(u8, field.name, std.meta.fieldInfo(@This(), ._).name)) continue;
+                if (std.mem.eql(u8, field.name, str)) return @unionInit(@This(), field.name, {});
+            } else return .{ ._ = str };
+        }
+
+        pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
+            const tag = try std.json.innerParse(std.meta.fieldInfo(@This(), ._).type, allocator, source, options);
+            errdefer allocator.free(tag);
+
+            const self = fromString(tag);
+
+            if (self != ._) allocator.free(tag);
+
+            return self;
+        }
+
+        pub fn jsonParseFromValue(_: std.mem.Allocator, source: std.json.Value, _: std.json.ParseOptions) !@This() {
+            return switch (source) {
+                .string => |tag| fromString(tag),
+                else => error.UnexpectedToken,
+            };
+        }
+
+        pub fn jsonStringify(self: @This(), jw: anytype) !void {
+            try jw.write(switch (self) {
+                ._ => |value| value,
+                else => |tag| @tagName(tag),
+            });
         }
     };
 };
