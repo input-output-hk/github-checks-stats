@@ -10,7 +10,7 @@
           ../src
         ];
 
-        zigDepsHash = "sha256-ip40SQ5/ZvYeOg4M45eFatAx7obYJpRCJWTHeest2oc=";
+        zigDepsHash = "sha256-3HD3un8GrSi9oXNZo/35Hl2jNT3eMRQ/NeKF8KC2v1s=";
       };
     };
   };

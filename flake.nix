@@ -19,7 +19,6 @@
 
       perSystem = {inputs', ...}: {
         _module.args.pkgs = inputs'.nixpkgs.legacyPackages.appendOverlays [
-          (_final: _prev: {inherit (inputs'.cizero.packages) zig zls;})
           inputs.cizero.overlays.zig
         ];
       };

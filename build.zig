@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
 
     const exe = b.addExecutable(.{
         .name = "github-checks-stats",
-        .root_source_file = std.Build.LazyPath.relative("src/main.zig"),
+        .root_source_file = b.path("src/main.zig"),
         .target = opts.target,
         .optimize = opts.optimize,
     });

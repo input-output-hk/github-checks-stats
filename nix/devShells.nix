@@ -1,14 +1,13 @@
 {
   perSystem = {
-    inputs',
     config,
     pkgs,
     ...
   }: {
     devShells.default = pkgs.mkShell {
       name = "devShell";
-      packages = [
-        inputs'.cizero.packages.zls
+      packages = with pkgs; [
+        zls
       ];
       inputsFrom = [
         config.packages.github-checks-stats
