@@ -34,8 +34,8 @@ pub fn build(b: *std.Build) void {
         });
         configureModule(b, &exe_test.root_module, opts);
 
-        const run_cizero_exe_test = b.addRunArtifact(exe_test);
-        test_step.dependOn(&run_cizero_exe_test.step);
+        const run_exe_test = b.addRunArtifact(exe_test);
+        test_step.dependOn(&run_exe_test.step);
     }
 }
 
