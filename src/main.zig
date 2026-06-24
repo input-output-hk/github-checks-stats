@@ -18,6 +18,7 @@ pub fn main(init: std.process.Init) !void {
         @"token-file": ?[]const u8 = null,
 
         pub const meta = .{
+            .usage_summary = "[options] <scan|watch [--interval SECS]> REPO...",
             .full_text = "Collect statistics about GitHub Checks",
             .option_docs = .{
                 .@"user-agent" = "User-Agent header to send, may be needed to authenticate as a GitHub App",
@@ -25,18 +26,34 @@ pub fn main(init: std.process.Init) !void {
             },
         };
     };
+
+    const Verbs = union(enum) {
+        scan: struct {
+            pub const meta = .{};
+        },
+        watch: struct {
+            interval: u32 = 300,
+
+            pub const meta = .{
+                .option_docs = .{
+                    .interval = "seconds to sleep between iterations (default 300)",
+                },
+            };
+        },
+    };
+
     const options = options: {
-        const result = args.parseForCurrentProcess(Options, init, .print);
+        const result = args.parseWithVerbForCurrentProcess(Options, Verbs, init, .print);
 
         const invalid = if (result) |options|
-            options.positionals.len == 0
+            options.verb == null or options.positionals.len == 0
         else |err| switch (err) {
             error.InvalidArguments => true,
             else => return err,
         };
 
         if (invalid) {
-            try args.printHelp(Options, "github-checks-stats REPO...", stderr_w);
+            try args.printHelpWithVerb(Options, Verbs, "github-checks-stats", stderr_w);
             try stderr_w.flush();
 
             std.process.exit(1);
@@ -61,7 +78,30 @@ pub fn main(init: std.process.Init) !void {
 
     try stdout_w.print("repo_owner\trepo_name\tpr_number\tcommit_oid\tcheck_suite_app_name\tcheck_suite_conclusion\tcheck_suite_status\tcheck_run_name\tcheck_run_started_at\tcheck_run_completed_at\tcheck_run_duration_seconds\n", .{});
 
-    for (options.positionals) |repo_full| {
+    switch (options.verb.?) {
+        .scan => try runPass(init.gpa, &client, stdout_w, options.positionals, null),
+        .watch => |watch| {
+            const interval = std.Io.Duration.fromSeconds(@as(i64, watch.interval));
+            const open_states: []const api.types.PullRequestState = &.{.OPEN};
+            while (true) {
+                runPass(init.gpa, &client, stdout_w, options.positionals, open_states) catch |err| switch (err) {
+                    error.RateLimited => std.log.warn("rate limited; sleeping {f} before retry", .{interval}),
+                    else => return err,
+                };
+                try std.Io.sleep(init.io, interval, .awake);
+            }
+        },
+    }
+}
+
+fn runPass(
+    gpa: std.mem.Allocator,
+    client: *api.Client,
+    stdout_w: *std.Io.Writer,
+    repos: []const []const u8,
+    states_filter: ?[]const api.types.PullRequestState,
+) !void {
+    for (repos) |repo_full| {
         const repo_owner, const repo_name = repo: {
             errdefer std.log.err("malformed repository \"{s}\", must be of form \"foo/bar\"", .{repo_full});
             var iter = std.mem.splitScalar(u8, repo_full, '/');
@@ -73,19 +113,19 @@ pub fn main(init: std.process.Init) !void {
 
         std.log.info("/{s}/{s}: scanning for pull requests…", .{ repo_owner, repo_name });
 
-        const prs = try api.queries.fetchPullRequestsByRepo(&client, init.gpa, repo_owner, repo_name);
+        const prs = try api.queries.fetchPullRequestsByRepo(client, gpa, repo_owner, repo_name, states_filter);
         defer prs.deinit();
 
         for (prs.value) |pr| {
             std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
 
-            const commits = try api.queries.fetchCommitsByPullRequestId(&client, init.gpa, pr.id);
+            const commits = try api.queries.fetchCommitsByPullRequestId(client, gpa, pr.id);
             defer commits.deinit();
 
             for (commits.value) |commit| {
                 std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
 
-                const check_suites = try api.queries.fetchCheckSuitesByCommitId(&client, init.gpa, commit.id);
+                const check_suites = try api.queries.fetchCheckSuitesByCommitId(client, gpa, commit.id);
                 defer check_suites.deinit();
 
                 for (check_suites.value) |check_suite| {
@@ -96,7 +136,7 @@ pub fn main(init: std.process.Init) !void {
 
                     std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
 
-                    const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(&client, init.gpa, check_suite.id);
+                    const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(client, gpa, check_suite.id);
                     defer check_runs.deinit();
 
                     for (check_runs.value) |check_run| {
@@ -121,6 +161,7 @@ pub fn main(init: std.process.Init) !void {
                             check_run.completedAt,
                             check_run_seconds,
                         });
+                        try stdout_w.flush();
                     }
                 }
             }

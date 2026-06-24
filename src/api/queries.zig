@@ -9,7 +9,13 @@ const clone = api.clone;
 const cloneLeaky = api.cloneLeaky;
 const Cloned = api.Cloned;
 
-pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, owner: []const u8, name: []const u8) !Cloned([]const types.PullRequest) {
+pub fn fetchPullRequestsByRepo(
+    client: *Client,
+    allocator: std.mem.Allocator,
+    owner: []const u8,
+    name: []const u8,
+    states: ?[]const types.PullRequestState,
+) !Cloned([]const types.PullRequest) {
     var cloned = try Cloned([]const types.PullRequest).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
@@ -24,6 +30,7 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
 
         owner: []const u8,
         name: []const u8,
+        states: ?[]const types.PullRequestState,
 
         const Error = Client.QueryError;
         const Page = Client.PageInfo(.backward);
@@ -35,6 +42,7 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
                     \\  $owner: String!
                     \\  $name: String!
                     \\  $cursor: String
+                    \\  $states: [PullRequestState!]
                     \\) {
                     \\  repository(
                     \\    owner: $owner
@@ -47,6 +55,7 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
                     \\        direction: ASC
                     \\      }
                     \\      before: $cursor
+                    \\      states: $states
                     \\    ) {
                 ++ Page.gql ++
                     \\      nodes
@@ -59,6 +68,7 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
                     .owner = ctx.owner,
                     .name = ctx.name,
                     .cursor = if (page) |p| p.followingCursor() else null,
+                    .states = ctx.states,
                 },
             }, .{});
             defer page_allocator.free(payload);
@@ -93,6 +103,7 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
             .prs = &prs,
             .owner = owner,
             .name = name,
+            .states = states,
         },
     );
 

@@ -35,6 +35,16 @@ pub const DateTime = struct {
 
 pub const ID = []const u8;
 
+pub const PullRequestState = enum {
+    OPEN,
+    CLOSED,
+    MERGED,
+
+    pub fn format(self: @This(), writer: *std.Io.Writer) !void {
+        try writer.writeAll(@tagName(self));
+    }
+};
+
 pub const PullRequest = struct {
     id: ID,
     resourcePath: []const u8,
