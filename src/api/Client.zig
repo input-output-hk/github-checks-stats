@@ -17,15 +17,24 @@ pub fn deinit(self: *@This()) void {
 }
 
 /// `user_agent` must outlive this instance.
-pub fn init(allocator: std.mem.Allocator, user_agent: ?[]const u8, token: ?[]const u8) !@This() {
+pub fn init(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *std.process.Environ.Map,
+    user_agent: ?[]const u8,
+    token: ?[]const u8,
+) !@This() {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var client = std.http.Client{ .allocator = allocator };
+    var client = std.http.Client{
+        .io = io,
+        .allocator = allocator,
+    };
     errdefer client.deinit();
 
-    try client.initDefaultProxies(arena_allocator);
+    try client.initDefaultProxies(arena_allocator, environ_map);
 
     const authorization = if (token) |t| try std.mem.concat(arena_allocator, u8, &.{ "token ", t }) else null;
     errdefer if (authorization) |a| arena_allocator.free(a);
@@ -44,14 +53,12 @@ pub fn init(allocator: std.mem.Allocator, user_agent: ?[]const u8, token: ?[]con
 
 pub const QueryError =
     std.Uri.ParseError ||
-    std.http.Client.Request.WaitError ||
-    std.http.Client.Request.ReadError ||
-    std.http.Client.Request.FinishError ||
+    std.http.Client.FetchError ||
     std.json.ParseError(std.json.Scanner) ||
     error{ StreamTooLong, QueryFailed, RateLimited };
 
 pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, payload: []const u8) QueryError!api.Cloned(Data) {
-    var response = std.ArrayList(u8).init(allocator);
+    var response = std.Io.Writer.Allocating.init(allocator);
     defer response.deinit();
 
     const max_attempts = 5;
@@ -69,7 +76,7 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
             },
             .method = .POST,
             .location = .{ .uri = self.endpoint },
-            .response_storage = .{ .dynamic = &response },
+            .response_writer = &response.writer,
             .payload = payload,
         });
 
@@ -83,7 +90,7 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
                 @intFromEnum(result.status),
                 result.status.phrase() orelse "unknown",
                 if (retry) ", retrying…" else "",
-                response.items,
+                response.written(),
             };
 
             if (retry) {
@@ -95,7 +102,7 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
             }
         }
 
-        std.log.debug("GitHub response (raw): {s}", .{response.items});
+        std.log.debug("GitHub response (raw): {s}", .{response.written()});
 
         const parsed = std.json.parseFromSlice(
             struct {
@@ -106,7 +113,7 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
                 } = .{},
             },
             allocator,
-            response.items,
+            response.written(),
             .{ .ignore_unknown_fields = true },
         ) catch |err| {
             std.log.err("failed to parse response from GitHub: {s}", .{@errorName(err)});
@@ -115,14 +122,14 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
         defer parsed.deinit();
 
         for (parsed.value.extensions.warnings) |warning| {
-            const warning_json = try std.json.stringifyAlloc(allocator, warning, .{ .whitespace = .indent_tab });
+            const warning_json = try std.json.Stringify.valueAlloc(allocator, warning, .{ .whitespace = .indent_tab });
             defer allocator.free(warning_json);
 
             std.log.warn("GitHub responded with warning: {s}", .{warning_json});
         }
 
         for (parsed.value.errors) |err| {
-            const err_json = try std.json.stringifyAlloc(allocator, err, .{ .whitespace = .indent_tab });
+            const err_json = try std.json.Stringify.valueAlloc(allocator, err, .{ .whitespace = .indent_tab });
             defer allocator.free(err_json);
 
             std.log.err("GitHub responded with error: {s}", .{err_json});
@@ -309,14 +316,26 @@ pub fn PageInfo(comptime paginate_direction: PaginateDirection) type {
         }
 
         const SelfNonVoid = blk: {
-            var info = @typeInfo(@This()).Struct;
-            info.fields = &.{};
-            for (std.meta.fields(@This())) |field| {
+            const info = @typeInfo(@This()).@"struct";
+
+            var field_names: [info.fields.len][]const u8 = undefined;
+            var field_types: [info.fields.len]type = undefined;
+            var field_attrs: [info.fields.len]std.builtin.Type.StructField.Attributes = undefined;
+
+            var fields_count = 0;
+            for (info.fields) |field| {
                 if (field.type == void) continue;
-                info.fields = info.fields ++ .{field};
+                field_names[fields_count] = field.name;
+                field_types[fields_count] = field.type;
+                field_attrs[fields_count] = .{
+                    .@"comptime" = field.is_comptime,
+                    .@"align" = field.alignment,
+                    .default_value_ptr = field.default_value_ptr,
+                };
+                fields_count += 1;
             }
-            info.decls = &.{};
-            break :blk @Type(.{ .Struct = info });
+
+            break :blk @Struct(.auto, info.backing_integer, field_names[0..fields_count], field_types[0..fields_count], field_attrs[0..fields_count]);
         };
 
         fn fromNonVoid(non_void: SelfNonVoid) @This() {

@@ -1,10 +1,21 @@
 {
   inputs = {
-    cizero.url = github:input-output-hk/cizero;
-    nixpkgs.follows = "cizero/nixpkgs";
-    parts.follows = "cizero/parts";
-    treefmt-nix.follows = "cizero/treefmt-nix";
-    inclusive.follows = "cizero/inclusive";
+    nixpkgs.url = "github:NixOS/nixpkgs/release-26.05";
+    parts.url = "github:hercules-ci/flake-parts";
+    treefmt-nix.url = "github:numtide/treefmt-nix";
+    inclusive = {
+      url = "github:input-output-hk/nix-inclusive";
+      inputs.stdlib.follows = "parts/nixpkgs-lib";
+    };
+    utils = {
+      url = "github:dermetfan/utils.zig";
+      inputs = {
+        nixpkgs.follows = "nixpkgs";
+        parts.follows = "parts";
+        treefmt-nix.follows = "treefmt-nix";
+        inclusive.follows = "inclusive";
+      };
+    };
   };
 
   outputs = inputs:
@@ -19,7 +30,7 @@
 
       perSystem = {inputs', ...}: {
         _module.args.pkgs = inputs'.nixpkgs.legacyPackages.appendOverlays [
-          inputs.cizero.overlays.zig
+          inputs.utils.overlays.zig
         ];
       };
     };

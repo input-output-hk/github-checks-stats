@@ -1,14 +1,16 @@
 .{
-    .name = "github-checks-stats",
+    .name = .github_checks_stats,
+    .fingerprint = 0x1449d928cdd94f4a,
     .version = "0.0.0",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .args = .{
-            .url = "https://github.com/ikskuh/zig-args/archive/1df15086e5d1b245acedadbec03440bb37871e5e.tar.gz",
-            .hash = "1220904d2fdcd970dd0d216211d092eb3ef6da01117163cc9393ab845a1d66c029d9",
+            .url = "git+https://github.com/ikskuh/zig-args?ref=master#fae95c8350c8791752392cc24efa17b5b8b9275b",
+            .hash = "args-0.0.0-CiLiqrjgAAAJ1dlySoNHUhYpX1btAdDU2Rr4Ls61VTbO",
         },
-        .datetime = .{
-            .url = "https://github.com/frmdstryr/zig-datetime/archive/70aebf28fb3e137cd84123a9349d157a74708721.tar.gz",
-            .hash = "122077215ce36e125a490e59ec1748ffd4f6ba00d4d14f7308978e5360711d72d77f",
+        .zeit = .{
+            .url = "git+https://github.com/rockorager/zeit?ref=v0.9.0#b1c1c2fcbc71fd7799a316bbcf0ff88d06d80ccc",
+            .hash = "zeit-0.9.0-5I6bk2m9AgBSMH8-L6rYJkwuQAyhXplnfxnvTSGzVHUR",
         },
     },
     .paths = .{

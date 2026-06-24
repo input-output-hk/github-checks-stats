@@ -4,12 +4,14 @@ const args = @import("args");
 
 const api = @import("api.zig");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){
-        .backing_allocator = std.heap.page_allocator,
-    };
-    defer if (gpa.deinit() == .leak) std.log.err("leaked memory", .{});
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    var stdout_buffer: [1024]u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(init.io, &stdout_buffer);
+    const stdout_w = &stdout.interface;
+
+    var stderr_buffer: [1024]u8 = undefined;
+    var stderr = std.Io.File.stderr().writer(init.io, &stderr_buffer);
+    const stderr_w = &stderr.interface;
 
     const Options = struct {
         @"user-agent": ?[]const u8 = null,
@@ -23,26 +25,41 @@ pub fn main() !void {
             },
         };
     };
-    const options = args.parseForCurrentProcess(Options, allocator, .print) catch |err| if (err == error.InvalidArguments) {
-        try args.printHelp(Options, "github-checks-stats REPO...", std.io.getStdErr().writer());
-        std.process.exit(1);
-    } else return err;
+    const options = options: {
+        const result = args.parseForCurrentProcess(Options, init, .print);
+
+        const invalid = if (result) |options|
+            options.positionals.len == 0
+        else |err| switch (err) {
+            error.InvalidArguments => true,
+            else => return err,
+        };
+
+        if (invalid) {
+            try args.printHelp(Options, "github-checks-stats REPO...", stderr_w);
+            try stderr_w.flush();
+
+            std.process.exit(1);
+        }
+
+        break :options try result;
+    };
     defer options.deinit();
 
     var client = try api.Client.init(
-        allocator,
+        init.arena.allocator(),
+        init.io,
+        init.environ_map,
         options.options.@"user-agent",
         if (options.options.@"token-file") |token_file| token: {
-            var buf: [1024]u8 = undefined;
-            const token = try std.fs.cwd().readFile(token_file, &buf);
+            var buffer: [1024]u8 = undefined;
+            const token = try std.Io.Dir.cwd().readFile(init.io, token_file, &buffer);
             break :token std.mem.trim(u8, token, " \t\n\r");
         } else null,
     );
     defer client.deinit();
 
-    const stdout = std.io.getStdOut().writer();
-
-    try stdout.print("repo_owner\trepo_name\tpr_number\tcommit_oid\tcheck_suite_app_name\tcheck_run_name\tcheck_run_started_at\tcheck_run_completed_at\tcheck_run_duration_seconds\n", .{});
+    try stdout_w.print("repo_owner\trepo_name\tpr_number\tcommit_oid\tcheck_suite_app_name\tcheck_run_name\tcheck_run_started_at\tcheck_run_completed_at\tcheck_run_duration_seconds\n", .{});
 
     for (options.positionals) |repo_full| {
         const repo_owner, const repo_name = repo: {
@@ -56,19 +73,19 @@ pub fn main() !void {
 
         std.log.info("/{s}/{s}: scanning for pull requests…", .{ repo_owner, repo_name });
 
-        const prs = try api.queries.fetchPullRequestsByRepo(&client, allocator, repo_owner, repo_name);
+        const prs = try api.queries.fetchPullRequestsByRepo(&client, init.gpa, repo_owner, repo_name);
         defer prs.deinit();
 
         for (prs.value) |pr| {
             std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
 
-            const commits = try api.queries.fetchCommitsByPullRequestId(&client, allocator, pr.id);
+            const commits = try api.queries.fetchCommitsByPullRequestId(&client, init.gpa, pr.id);
             defer commits.deinit();
 
             for (commits.value) |commit| {
                 std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
 
-                const check_suites = try api.queries.fetchCheckSuitesByCommitId(&client, allocator, commit.id);
+                const check_suites = try api.queries.fetchCheckSuitesByCommitId(&client, init.gpa, commit.id);
                 defer check_suites.deinit();
 
                 for (check_suites.value) |check_suite| {
@@ -79,15 +96,19 @@ pub fn main() !void {
 
                     std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
 
-                    const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(&client, allocator, check_suite.id);
+                    const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(&client, init.gpa, check_suite.id);
                     defer check_runs.deinit();
 
                     for (check_runs.value) |check_run| {
-                        const check_run_seconds = check_run.completedAt.inner.sub(check_run.startedAt.inner).totalSeconds();
+                        std.debug.assert(check_run.startedAt.inner.offset == check_run.completedAt.inner.offset);
+                        const check_run_seconds = @divFloor(
+                            check_run.completedAt.inner.instant().timestamp - check_run.startedAt.inner.instant().timestamp,
+                            std.time.ns_per_s,
+                        );
 
                         std.log.info("{s}: {d}s", .{ check_run.resourcePath, check_run_seconds });
 
-                        try stdout.print("{s}\t{s}\t{d}\t{s}\t{s}\t{s}\t{}\t{}\t{d}\n", .{
+                        try stdout_w.print("{s}\t{s}\t{d}\t{s}\t{s}\t{s}\t{f}\t{f}\t{d}\n", .{
                             repo_owner,
                             repo_name,
                             pr.number,

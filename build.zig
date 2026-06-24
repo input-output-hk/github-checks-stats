@@ -6,14 +6,19 @@ pub fn build(b: *std.Build) void {
         .optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe }),
     };
 
-    const exe = b.addExecutable(.{
-        .name = "github-checks-stats",
+    const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = opts.target,
         .optimize = opts.optimize,
     });
+    mod.addImport("args", b.dependency("args", opts).module("args"));
+    mod.addImport("zeit", b.dependency("zeit", opts).module("zeit"));
+
+    const exe = b.addExecutable(.{
+        .name = "github-checks-stats",
+        .root_module = mod,
+    });
     b.installArtifact(exe);
-    configureModule(b, &exe.root_module, opts);
 
     const run_step = b.step("run", "Run the app");
     {
@@ -28,18 +33,10 @@ pub fn build(b: *std.Build) void {
     {
         const exe_test = b.addTest(.{
             .name = "exe",
-            .root_source_file = exe.root_module.root_source_file.?,
-            .target = opts.target,
-            .optimize = opts.optimize,
+            .root_module = mod,
         });
-        configureModule(b, &exe_test.root_module, opts);
 
         const run_exe_test = b.addRunArtifact(exe_test);
         test_step.dependOn(&run_exe_test.step);
     }
-}
-
-fn configureModule(b: *std.Build, module: *std.Build.Module, opts: anytype) void {
-    module.addImport("args", b.dependency("args", opts).module("args"));
-    module.addImport("datetime", b.dependency("datetime", opts).module("zig-datetime"));
 }

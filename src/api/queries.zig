@@ -14,13 +14,13 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
-    var prs = std.ArrayListUnmanaged(types.PullRequest){};
+    var prs = std.ArrayList(types.PullRequest).empty;
 
     const Ctx = struct {
         client: *Client,
 
         cloned_allocator: std.mem.Allocator,
-        prs: *std.ArrayListUnmanaged(types.PullRequest),
+        prs: *std.ArrayList(types.PullRequest),
 
         owner: []const u8,
         name: []const u8,
@@ -29,7 +29,7 @@ pub fn fetchPullRequestsByRepo(client: *Client, allocator: std.mem.Allocator, ow
         const Page = Client.PageInfo(.backward);
 
         fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
-            const payload = try std.json.stringifyAlloc(page_allocator, .{
+            const payload = try std.json.Stringify.valueAlloc(page_allocator, .{
                 .query = "" ++
                     \\query(
                     \\  $owner: String!
@@ -105,13 +105,13 @@ pub fn fetchCommitsByPullRequestId(client: *Client, allocator: std.mem.Allocator
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
-    var commits = std.ArrayListUnmanaged(types.Commit){};
+    var commits = std.ArrayList(types.Commit).empty;
 
     const Ctx = struct {
         client: *Client,
 
         cloned_allocator: std.mem.Allocator,
-        commits: *std.ArrayListUnmanaged(types.Commit),
+        commits: *std.ArrayList(types.Commit),
 
         id: []const u8,
 
@@ -119,7 +119,7 @@ pub fn fetchCommitsByPullRequestId(client: *Client, allocator: std.mem.Allocator
         const Page = Client.PageInfo(.backward);
 
         fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
-            const payload = try std.json.stringifyAlloc(page_allocator, .{
+            const payload = try std.json.Stringify.valueAlloc(page_allocator, .{
                 .query = "" ++
                     \\query(
                     \\  $id: ID!
@@ -191,13 +191,13 @@ pub fn fetchCheckSuitesByCommitId(client: *Client, allocator: std.mem.Allocator,
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
-    var check_suites = std.ArrayListUnmanaged(types.CheckSuite){};
+    var check_suites = std.ArrayList(types.CheckSuite).empty;
 
     const Ctx = struct {
         client: *Client,
 
         cloned_allocator: std.mem.Allocator,
-        check_suites: *std.ArrayListUnmanaged(types.CheckSuite),
+        check_suites: *std.ArrayList(types.CheckSuite),
 
         id: []const u8,
 
@@ -205,7 +205,7 @@ pub fn fetchCheckSuitesByCommitId(client: *Client, allocator: std.mem.Allocator,
         const Page = Client.PageInfo(.backward);
 
         fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
-            const payload = try std.json.stringifyAlloc(page_allocator, .{
+            const payload = try std.json.Stringify.valueAlloc(page_allocator, .{
                 .query = "" ++
                     \\query(
                     \\  $id: ID!
@@ -273,13 +273,13 @@ pub fn fetchCheckRunsByCheckSuiteId(client: *Client, allocator: std.mem.Allocato
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
-    var check_runs = std.ArrayListUnmanaged(types.CheckRun){};
+    var check_runs = std.ArrayList(types.CheckRun).empty;
 
     const Ctx = struct {
         client: *Client,
 
         cloned_allocator: std.mem.Allocator,
-        check_runs: *std.ArrayListUnmanaged(types.CheckRun),
+        check_runs: *std.ArrayList(types.CheckRun),
 
         id: []const u8,
 
@@ -287,7 +287,7 @@ pub fn fetchCheckRunsByCheckSuiteId(client: *Client, allocator: std.mem.Allocato
         const Page = Client.PageInfo(.backward);
 
         fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
-            const payload = try std.json.stringifyAlloc(page_allocator, .{
+            const payload = try std.json.Stringify.valueAlloc(page_allocator, .{
                 .query = "" ++
                     \\query(
                     \\  $id: ID!

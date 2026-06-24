@@ -1,48 +1,31 @@
+//! Subset of types needed.
+//! https://docs.github.com/en/graphql/reference
+
 const std = @import("std");
+const zeit = @import("zeit");
 
 pub const DateTime = struct {
     inner: Inner,
 
-    const Inner = @import("datetime").datetime.Datetime;
+    const Inner = zeit.Time;
 
-    // TODO support time zones other than UTC
-    // TODO upstream
-    /// Parse datetime in format YYYY-MM-DDTHH:MM:SSZ. Numbers must be zero padded.
-    pub fn parseIso(ymdhmsz: []const u8) !DateTime {
-        const value = std.mem.trim(u8, ymdhmsz, " ");
-
-        if (value.len < 19 or value.len > 20) return error.InvalidFormat;
-
-        const year = std.fmt.parseInt(u16, value[0..4], 10) catch return error.InvalidFormat;
-        const month = std.fmt.parseInt(u8, value[5..7], 10) catch return error.InvalidFormat;
-        const day = std.fmt.parseInt(u8, value[8..10], 10) catch return error.InvalidFormat;
-
-        const hour = std.fmt.parseInt(u8, value[11..13], 10) catch return error.InvalidFormat;
-        const minute = std.fmt.parseInt(u8, value[14..16], 10) catch return error.InvalidFormat;
-        const second = std.fmt.parseInt(u8, value[17..19], 10) catch return error.InvalidFormat;
-
-        if (value.len == 20 and std.ascii.toUpper(value[19]) != 'Z') return error.InvalidFormat;
-
-        return .{ .inner = try Inner.create(year, month, day, hour, minute, second, 0, null) };
+    pub fn parseIso8601(text: []const u8) !DateTime {
+        return .{.inner = try Inner.fromISO8601(std.mem.trim(u8, text, " "))};
     }
 
-    pub fn format(self: @This(), comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        const with_micro = comptime std.mem.indexOfScalar(u8, fmt, '.') != null;
-
-        var buf: [25 + if (with_micro) 7 else 0]u8 = undefined;
-        const iso = try self.inner.formatISO8601Buf(&buf, with_micro);
-        std.debug.assert(iso.len == buf.len);
-        try writer.writeAll(iso);
+    // TODO support time zones other than UTC
+    pub fn format(self: @This(), writer: *std.Io.Writer) !void {
+        self.inner.strftime(writer, "%FT%T%z") catch return error.WriteFailed;
     }
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
         const iso = try std.json.innerParse([]const u8, allocator, source, options);
-        return parseIso(iso) catch return error.UnexpectedToken;
+        return parseIso8601(iso) catch return error.UnexpectedToken;
     }
 
     pub fn jsonParseFromValue(allocator: std.mem.Allocator, source: std.json.Value, options: std.json.ParseOptions) !@This() {
         const iso = try std.json.innerParseFromValue([]const u8, allocator, source, options);
-        return parseIso(iso) catch return error.UnexpectedToken;
+        return parseIso8601(iso) catch return error.UnexpectedToken;
     }
 
     pub fn graphql(comptime _: []const u8, _: comptime_int) ?[]const u8 {
@@ -93,6 +76,10 @@ pub const CheckConclusionState = enum {
     SKIPPED,
     STARTUP_FAILURE,
     STALE,
+
+    pub fn format(self: @This(), writer: *std.Io.Writer) !void {
+        try writer.writeAll(@tagName(self));
+    }
 };
 
 pub const CheckStatusState = enum {
@@ -102,6 +89,10 @@ pub const CheckStatusState = enum {
     COMPLETED,
     WAITING,
     PENDING,
+
+    pub fn format(self: @This(), writer: *std.Io.Writer) !void {
+        try writer.writeAll(@tagName(self));
+    }
 };
 
 pub const CheckSuite = struct {
