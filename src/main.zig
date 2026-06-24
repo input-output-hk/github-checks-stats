@@ -59,7 +59,7 @@ pub fn main(init: std.process.Init) !void {
     );
     defer client.deinit();
 
-    try stdout_w.print("repo_owner\trepo_name\tpr_number\tcommit_oid\tcheck_suite_app_name\tcheck_run_name\tcheck_run_started_at\tcheck_run_completed_at\tcheck_run_duration_seconds\n", .{});
+    try stdout_w.print("repo_owner\trepo_name\tpr_number\tcommit_oid\tcheck_suite_app_name\tcheck_suite_conclusion\tcheck_suite_status\tcheck_run_name\tcheck_run_started_at\tcheck_run_completed_at\tcheck_run_duration_seconds\n", .{});
 
     for (options.positionals) |repo_full| {
         const repo_owner, const repo_name = repo: {
@@ -108,12 +108,14 @@ pub fn main(init: std.process.Init) !void {
 
                         std.log.info("{s}: {d}s", .{ check_run.resourcePath, check_run_seconds });
 
-                        try stdout_w.print("{s}\t{s}\t{d}\t{s}\t{s}\t{s}\t{f}\t{f}\t{d}\n", .{
+                        try stdout_w.print("{s}\t{s}\t{d}\t{s}\t{s}\t{?f}\t{f}\t{s}\t{f}\t{f}\t{d}\n", .{
                             repo_owner,
                             repo_name,
                             pr.number,
                             commit.oid,
                             check_suite.app.name,
+                            check_suite.conclusion,
+                            check_suite.status,
                             check_run.name,
                             check_run.startedAt,
                             check_run.completedAt,
