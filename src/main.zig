@@ -1,8 +1,11 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const args = @import("args");
+const utils = @import("utils");
+const zqlite = @import("zqlite");
 
 const api = @import("api.zig");
+const Db = @import("Db.zig");
 
 pub fn main(init: std.process.Init) !void {
     var stdout_buffer: [1024]u8 = undefined;
@@ -14,6 +17,7 @@ pub fn main(init: std.process.Init) !void {
     const stderr_w = &stderr.interface;
 
     const Options = struct {
+        db: [:0]const u8 = "github-checks-stats.sqlite",
         @"user-agent": ?[]const u8 = null,
         @"token-file": ?[]const u8 = null,
 
@@ -21,6 +25,7 @@ pub fn main(init: std.process.Init) !void {
             .usage_summary = "[options] <scan|watch [--interval SECS]> REPO...",
             .full_text = "Collect statistics about GitHub Checks",
             .option_docs = .{
+                .db = "path to state database",
                 .@"user-agent" = "User-Agent header to send, may be needed to authenticate as a GitHub App",
                 .@"token-file" = "file to read a token from to authorize with",
             },
@@ -63,6 +68,12 @@ pub fn main(init: std.process.Init) !void {
     };
     defer options.deinit();
 
+    var db = try Db.init(init.gpa, init.io, .{ .path = options.options.db });
+    defer db.deinit();
+
+    const db_conn = try db.pool.acquire(init.io);
+    defer db.pool.release(init.io, db_conn);
+
     var client = try api.Client.init(
         init.arena.allocator(),
         init.io,
@@ -76,17 +87,30 @@ pub fn main(init: std.process.Init) !void {
     );
     defer client.deinit();
 
-    try stdout_w.print("repo_owner\trepo_name\tpr_number\tcommit_oid\tcheck_suite_app_name\tcheck_suite_conclusion\tcheck_suite_status\tcheck_run_name\tcheck_run_started_at\tcheck_run_completed_at\tcheck_run_duration_seconds\n", .{});
+    try stdout_w.print(utils.mem.comptimeJoin(&.{
+        "repo_owner",
+        "repo_name",
+        "pr_number",
+        "commit_oid",
+        "check_suite_app_name",
+        "check_suite_status",
+        "check_suite_conclusion",
+        "check_run_name",
+        "check_run_status",
+        "check_run_started_at",
+        "check_run_completed_at",
+        "check_run_duration_seconds",
+    }, "\t") ++ "\n", .{});
 
     switch (options.verb.?) {
-        .scan => try runPass(init.gpa, &client, stdout_w, options.positionals, null),
+        .scan => try scan(init.gpa, &client, db_conn, stdout_w, options.positionals, null), // TODO retry on rate limit
         .watch => |watch| {
             const interval = std.Io.Duration.fromSeconds(@as(i64, watch.interval));
             const open_states: []const api.types.PullRequestState = &.{.OPEN};
             while (true) {
-                runPass(init.gpa, &client, stdout_w, options.positionals, open_states) catch |err| switch (err) {
+                scan(init.gpa, &client, db_conn, stdout_w, options.positionals, open_states) catch |err| switch (err) {
                     error.RateLimited => std.log.warn("rate limited; sleeping {f} before retry", .{interval}),
-                    else => return err,
+                    else => |e| return e,
                 };
                 try std.Io.sleep(init.io, interval, .awake);
             }
@@ -94,12 +118,13 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn runPass(
-    gpa: std.mem.Allocator,
+fn scan(
+    allocator: std.mem.Allocator,
     client: *api.Client,
+    db_conn: zqlite.Conn,
     stdout_w: *std.Io.Writer,
     repos: []const []const u8,
-    states_filter: ?[]const api.types.PullRequestState,
+    states: ?[]const api.types.PullRequestState,
 ) !void {
     for (repos) |repo_full| {
         const repo_owner, const repo_name = repo: {
@@ -111,56 +136,133 @@ fn runPass(
             break :repo .{ owner, name };
         };
 
+        std.log.info("/{s}/{s}: fetching repository…", .{ repo_owner, repo_name });
+
+        const repo = try api.queries.fetchRepoByFullName(allocator, client, repo_owner, repo_name);
+        defer repo.deinit();
+
+        try Db.queries.Repository.upsert.exec(db_conn, .{ repo.value.id, repo.value.owner.login, repo.value.name });
+
         std.log.info("/{s}/{s}: scanning for pull requests…", .{ repo_owner, repo_name });
 
-        const prs = try api.queries.fetchPullRequestsByRepo(client, gpa, repo_owner, repo_name, states_filter);
+        const prs = try api.queries.fetchPullRequestsByRepo(allocator, client, repo_owner, repo_name, states);
         defer prs.deinit();
+
+        for (prs.value) |pr|
+            try Db.queries.PullRequest.upsert.exec(db_conn, .{ pr.id, repo.value.id, pr.number });
 
         for (prs.value) |pr| {
             std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
 
-            const commits = try api.queries.fetchCommitsByPullRequestId(client, gpa, pr.id);
+            const commits = try api.queries.fetchCommitsByPullRequestId(allocator, client, pr.id);
             defer commits.deinit();
+
+            for (commits.value) |commit|
+                try Db.queries.Commit.upsert.exec(db_conn, .{ commit.id, commit.oid });
 
             for (commits.value) |commit| {
                 std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
 
-                const check_suites = try api.queries.fetchCheckSuitesByCommitId(client, gpa, commit.id);
+                const check_suites = try api.queries.fetchCheckSuitesByCommitId(allocator, client, commit.id);
                 defer check_suites.deinit();
 
                 for (check_suites.value) |check_suite| {
-                    if (check_suite.status != .COMPLETED) {
-                        std.log.info("{s}: skipping (not completed)", .{check_suite.resourcePath});
-                        continue;
-                    }
+                    try Db.queries.App.upsert.exec(db_conn, .{
+                        check_suite.app.id,
+                        check_suite.app.slug,
+                        check_suite.app.name,
+                    });
 
+                    {
+                        const created_at = try std.fmt.allocPrint(allocator, "{f}", .{check_suite.createdAt});
+                        defer allocator.free(created_at);
+
+                        const conclusion = if (check_suite.conclusion) |c| try std.fmt.allocPrint(allocator, "{f}", .{c}) else null;
+                        defer if (conclusion) |c| allocator.free(c);
+
+                        const status = try std.fmt.allocPrint(allocator, "{f}", .{check_suite.status});
+                        defer allocator.free(status);
+
+                        try Db.queries.CheckSuite.upsert.exec(db_conn, .{
+                            check_suite.id,
+                            repo.value.id,
+                            commit.id,
+                            check_suite.app.id,
+                            created_at,
+                            conclusion,
+                            status,
+                        });
+                    }
+                }
+
+                for (check_suites.value) |check_suite| {
                     std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
 
-                    const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(client, gpa, check_suite.id);
+                    const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(allocator, client, check_suite.id);
                     defer check_runs.deinit();
 
                     for (check_runs.value) |check_run| {
-                        std.debug.assert(check_run.startedAt.inner.offset == check_run.completedAt.inner.offset);
-                        const check_run_seconds = @divFloor(
-                            check_run.completedAt.inner.instant().timestamp - check_run.startedAt.inner.instant().timestamp,
-                            std.time.ns_per_s,
-                        );
+                        const started_at = try std.fmt.allocPrint(allocator, "{f}", .{check_run.startedAt});
+                        defer allocator.free(started_at);
 
-                        std.log.info("{s}: {d}s", .{ check_run.resourcePath, check_run_seconds });
+                        const completed_at = if (check_run.completedAt) |c| try std.fmt.allocPrint(allocator, "{f}", .{c}) else null;
+                        defer if (completed_at) |c| allocator.free(c);
 
-                        try stdout_w.print("{s}\t{s}\t{d}\t{s}\t{s}\t{?f}\t{f}\t{s}\t{f}\t{f}\t{d}\n", .{
-                            repo_owner,
-                            repo_name,
-                            pr.number,
-                            commit.oid,
-                            check_suite.app.name,
-                            check_suite.conclusion,
-                            check_suite.status,
+                        const status = try std.fmt.allocPrint(allocator, "{f}", .{check_run.status});
+                        defer allocator.free(status);
+
+                        try Db.queries.CheckRun.upsert.exec(db_conn, .{
+                            check_run.id,
+                            check_suite.id,
                             check_run.name,
-                            check_run.startedAt,
-                            check_run.completedAt,
-                            check_run_seconds,
+                            started_at,
+                            completed_at,
+                            check_run.externalId,
+                            status,
                         });
+                    }
+
+                    for (check_runs.value) |check_run| {
+                        const check_run_ns = if (check_run.completedAt) |completedAt| duration: {
+                            std.debug.assert(check_run.startedAt.inner.offset == completedAt.inner.offset);
+                            break :duration completedAt.inner.instant().timestamp - check_run.startedAt.inner.instant().timestamp;
+                        } else null;
+
+                        std.log.info("{s}: {?f}", .{
+                            check_run.resourcePath,
+                            if (check_run_ns) |c| std.Io.Duration.fromNanoseconds(@intCast(c)) else null,
+                        });
+
+                        try stdout_w.print(
+                            utils.mem.comptimeJoin(&.{
+                                "{s}",
+                                "{s}",
+                                "{d}",
+                                "{s}",
+                                "{s}",
+                                "{f}",
+                                "{?f}",
+                                "{s}",
+                                "{f}",
+                                "{f}",
+                                "{?f}",
+                                "{?d}",
+                            }, "\t") ++ "\n",
+                            .{
+                                repo_owner,
+                                repo_name,
+                                pr.number,
+                                commit.oid,
+                                check_suite.app.name,
+                                check_suite.status,
+                                check_suite.conclusion,
+                                check_run.name,
+                                check_run.status,
+                                check_run.startedAt,
+                                check_run.completedAt,
+                                if (check_run_ns) |c| @divFloor(c, std.time.ns_per_s) else null,
+                            },
+                        );
                         try stdout_w.flush();
                     }
                 }

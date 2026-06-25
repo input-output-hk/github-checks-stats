@@ -9,9 +9,48 @@ const clone = api.clone;
 const cloneLeaky = api.cloneLeaky;
 const Cloned = api.Cloned;
 
-pub fn fetchPullRequestsByRepo(
-    client: *Client,
+pub fn fetchRepoByFullName(
     allocator: std.mem.Allocator,
+    client: *Client,
+    owner: []const u8,
+    name: []const u8,
+) !Cloned(types.Repository) {
+    const payload = try std.json.Stringify.valueAlloc(allocator, .{
+        .query = "" ++
+            \\query(
+            \\  $owner: String!
+            \\  $name: String!
+            \\) {
+            \\  repository(
+            \\    owner: $owner
+            \\    name: $name
+            \\  )
+        ++ " " ++ comptime api.graphqlPretty(types.Repository, "  ", 3) ++ "\n" ++
+            \\}
+        ,
+        .variables = .{
+            .owner = owner,
+            .name = name,
+        },
+    }, .{});
+    defer allocator.free(payload);
+
+    const response = try client.query(allocator, struct {
+        // Optional because there could be no such repository.
+        // GitHub will respond with an error,
+        // causing this call to return an error,
+        // but also with this JSON field set to null
+        // which still needs to parse properly.
+        repository: ?types.Repository,
+    }, payload);
+    defer response.deinit();
+
+    return try clone(allocator, response.value.repository.?);
+}
+
+pub fn fetchPullRequestsByRepo(
+    allocator: std.mem.Allocator,
+    client: *Client,
     owner: []const u8,
     name: []const u8,
     states: ?[]const types.PullRequestState,
@@ -111,7 +150,7 @@ pub fn fetchPullRequestsByRepo(
     return cloned;
 }
 
-pub fn fetchCommitsByPullRequestId(client: *Client, allocator: std.mem.Allocator, id: []const u8) !Cloned([]const types.Commit) {
+pub fn fetchCommitsByPullRequestId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const types.Commit) {
     var cloned = try Cloned([]const types.Commit).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
@@ -197,7 +236,7 @@ pub fn fetchCommitsByPullRequestId(client: *Client, allocator: std.mem.Allocator
     return cloned;
 }
 
-pub fn fetchCheckSuitesByCommitId(client: *Client, allocator: std.mem.Allocator, id: []const u8) !Cloned([]const types.CheckSuite) {
+pub fn fetchCheckSuitesByCommitId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const types.CheckSuite) {
     var cloned = try Cloned([]const types.CheckSuite).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
@@ -279,7 +318,7 @@ pub fn fetchCheckSuitesByCommitId(client: *Client, allocator: std.mem.Allocator,
     return cloned;
 }
 
-pub fn fetchCheckRunsByCheckSuiteId(client: *Client, allocator: std.mem.Allocator, id: []const u8) !Cloned([]const types.CheckRun) {
+pub fn fetchCheckRunsByCheckSuiteId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const types.CheckRun) {
     var cloned = try Cloned([]const types.CheckRun).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();

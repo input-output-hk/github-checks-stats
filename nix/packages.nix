@@ -10,7 +10,11 @@
           ../src
         ];
 
-        zigDepsHash = "sha256-/CZQz6WoPT1VMITX0VRMukJEiblz8TI8u/weMVeRVb4=";
+        zigDepsHash = "sha256-Rg/EAVtez/tJdHXZ9m97N5wtDwWyGKc5B6EWmWLG9TA=";
+
+        buildInputs = with pkgs; [
+          sqlite.dev
+        ];
       };
     };
   };

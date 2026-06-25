@@ -1,6 +1,15 @@
 //! Subset of types needed.
 //! https://docs.github.com/en/graphql/reference
 
+// TODO There is no proper way to create types for API objects with GraphQL.
+// The type changes based on the query. Most prominently, non-primitive fields
+// can introduce type loops. One way to work around this would be
+// to fetch only the IDs of non-primitive types in fields, but that negates
+// the advantages of GraphQL in the first place.
+// This means that these types are only response types for specific queries.
+// This is not easily apparent by looking at this file though.
+// Improve that by moving them next to their queries instead.
+
 const std = @import("std");
 const zeit = @import("zeit");
 
@@ -33,7 +42,19 @@ pub const DateTime = struct {
     }
 };
 
-pub const ID = []const u8;
+pub const Id = []const u8;
+pub const Int = i32;
+
+pub const RepositoryOwner = struct {
+    id: Id,
+    login: []const u8,
+};
+
+pub const Repository = struct {
+    id: Id,
+    owner: RepositoryOwner,
+    name: []const u8,
+};
 
 pub const PullRequestState = enum {
     OPEN,
@@ -46,15 +67,15 @@ pub const PullRequestState = enum {
 };
 
 pub const PullRequest = struct {
-    id: ID,
+    id: Id,
     resourcePath: []const u8,
 
-    number: usize,
+    number: Int,
     title: []const u8,
 };
 
 pub const Commit = struct {
-    id: ID,
+    id: Id,
     resourcePath: []const u8,
 
     oid: []const u8,
@@ -62,6 +83,8 @@ pub const Commit = struct {
 };
 
 pub const App = struct {
+    id: Id,
+    slug: []const u8,
     name: []const u8,
 };
 
@@ -106,7 +129,7 @@ pub const CheckStatusState = enum {
 };
 
 pub const CheckSuite = struct {
-    id: ID,
+    id: Id,
     resourcePath: []const u8,
 
     app: App,
@@ -119,10 +142,12 @@ pub const CheckSuite = struct {
 };
 
 pub const CheckRun = struct {
-    id: ID,
+    id: Id,
     resourcePath: []const u8,
 
     name: []const u8,
     startedAt: DateTime,
-    completedAt: DateTime,
+    completedAt: ?DateTime,
+    externalId: ?[]const u8,
+    status: CheckStatusState,
 };

@@ -12,6 +12,18 @@
             .url = "git+https://github.com/rockorager/zeit?ref=v0.9.0#b1c1c2fcbc71fd7799a316bbcf0ff88d06d80ccc",
             .hash = "zeit-0.9.0-5I6bk2m9AgBSMH8-L6rYJkwuQAyhXplnfxnvTSGzVHUR",
         },
+        .zqlite = .{
+            .url = "git+https://github.com/karlseguin/zqlite.zig#5ac4cabe95a6d7faa7baf0da8057a8e6e8a227a1",
+            .hash = "zqlite-0.0.1-RWLaY64xnAAxsD2YNT8QqPMJUuaFv2GOzFRR4aGypJv3",
+        },
+        .zqlite_typed = .{
+            .url = "git+https://github.com/dermetfan/zqlite-typed.zig#38ed733185db70d9deba77e344d132e02ac1dc5c",
+            .hash = "zqlite_typed-0.0.0-la1GaEZIAAB9djBePrPVETjrHqfIZ-as7LHnLyDrDYr2",
+        },
+        .utils = .{
+            .url = "git+https://github.com/dermetfan/utils.zig#5817eeb7a33a8886aba1d974f8b4df4fe7afb4c4",
+            .hash = "utils-0.0.0-5JJlD-CwAgBWxro7Qd2EPYRnebBuWNeZRFjfGVZNgMIE",
+        },
     },
     .paths = .{
         "build.zig",
