@@ -25,6 +25,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "c", .module = translate_c_mod },
             .{ .name = "args", .module = b.dependency("args", opts).module("args") },
+            .{ .name = "metrics", .module = b.dependency("metrics", opts).module("metrics") },
             .{ .name = "utils", .module = b.dependency("utils", opts).module("utils") },
             .{ .name = "zeit", .module = b.dependency("zeit", opts).module("zeit") },
             .{ .name = "zqlite", .module = b.dependency("zqlite", opts).module("zqlite") },

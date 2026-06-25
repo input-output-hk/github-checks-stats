@@ -9,6 +9,11 @@ CREATE TABLE "pull_request" (
 	"id" TEXT PRIMARY KEY,
 	"repository" TEXT NOT NULL REFERENCES "repository",
 	"number" INTEGER NOT NULL,
+	"state" TEXT NOT NULL CHECK ("state" IN (
+		'CLOSED',
+		'MERGED',
+		'OPEN'
+	)),
 	UNIQUE ("repository", "number")
 ) STRICT, WITHOUT ROWID;
 
@@ -29,6 +34,14 @@ CREATE TABLE "check_suite" (
 	"commit" TEXT NOT NULL REFERENCES "commit",
 	"app" TEXT NOT NULL REFERENCES "app",
 	"created_at" TEXT NOT NULL, -- ISO8601
+	"status" TEXT NOT NULL CHECK ("status" IN (
+		'COMPLETED',
+		'IN_PROGRESS',
+		'PENDING',
+		'QUEUED',
+		'REQUESTED',
+		'WAITING'
+	)),
 	"conclusion" TEXT CHECK ("conclusion" IN (
 		'ACTION_REQUIRED',
 		'CANCELLED',
@@ -39,14 +52,6 @@ CREATE TABLE "check_suite" (
 		'STARTUP_FAILURE',
 		'SUCCESS',
 		'TIMED_OUT'
-	)),
-	"status" TEXT NOT NULL CHECK ("status" IN (
-		'COMPLETED',
-		'IN_PROGRESS',
-		'PENDING',
-		'QUEUED',
-		'REQUESTED',
-		'WAITING'
 	))
 ) STRICT, WITHOUT ROWID;
 
@@ -64,5 +69,16 @@ CREATE TABLE "check_run" (
 		'QUEUED',
 		'REQUESTED',
 		'WAITING'
+	)),
+	"conclusion" TEXT CHECK ("conclusion" IN (
+		'ACTION_REQUIRED',
+		'CANCELLED',
+		'FAILURE',
+		'NEUTRAL',
+		'SKIPPED',
+		'STALE',
+		'STARTUP_FAILURE',
+		'SUCCESS',
+		'TIMED_OUT'
 	))
 ) STRICT, WITHOUT ROWID;
