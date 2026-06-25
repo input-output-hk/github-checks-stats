@@ -3,9 +3,11 @@ const std = @import("std");
 const args = @import("args");
 const utils = @import("utils");
 const zqlite = @import("zqlite");
+const zqlite_typed = @import("zqlite-typed");
 
 const api = @import("api.zig");
 const Db = @import("Db.zig");
+const Metrics = @import("Metrics.zig");
 
 pub fn main(init: std.process.Init) !void {
     var stdout_buffer: [1024]u8 = undefined;
@@ -87,6 +89,9 @@ pub fn main(init: std.process.Init) !void {
     );
     defer client.deinit();
 
+    var metrics = try Metrics.init(init.gpa, init.io, .{});
+    defer metrics.deinit();
+
     try stdout_w.print(utils.mem.comptimeJoin(&.{
         "repo_owner",
         "repo_name",
@@ -97,18 +102,19 @@ pub fn main(init: std.process.Init) !void {
         "check_suite_conclusion",
         "check_run_name",
         "check_run_status",
+        "check_run_conclusion",
         "check_run_started_at",
         "check_run_completed_at",
         "check_run_duration_seconds",
     }, "\t") ++ "\n", .{});
 
     switch (options.verb.?) {
-        .scan => try scan(init.gpa, &client, db_conn, stdout_w, options.positionals, null), // TODO retry on rate limit
+        .scan => try scan(init.gpa, &client, db_conn, stdout_w, &metrics, options.positionals, null), // TODO retry on rate limit
         .watch => |watch| {
             const interval = std.Io.Duration.fromSeconds(@as(i64, watch.interval));
             const open_states: []const api.types.PullRequestState = &.{.OPEN};
             while (true) {
-                scan(init.gpa, &client, db_conn, stdout_w, options.positionals, open_states) catch |err| switch (err) {
+                scan(init.gpa, &client, db_conn, stdout_w, &metrics, options.positionals, open_states) catch |err| switch (err) {
                     error.RateLimited => std.log.warn("rate limited; sleeping {f} before retry", .{interval}),
                     else => |e| return e,
                 };
@@ -123,6 +129,7 @@ fn scan(
     client: *api.Client,
     db_conn: zqlite.Conn,
     stdout_w: *std.Io.Writer,
+    metrics: *Metrics,
     repos: []const []const u8,
     states: ?[]const api.types.PullRequestState,
 ) !void {
@@ -149,7 +156,7 @@ fn scan(
         defer prs.deinit();
 
         for (prs.value) |pr|
-            try Db.queries.PullRequest.upsert.exec(db_conn, .{ pr.id, repo.value.id, pr.number });
+            try Db.queries.PullRequest.upsert.exec(db_conn, .{ pr.id, repo.value.id, pr.number, @tagName(pr.state) });
 
         for (prs.value) |pr| {
             std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
@@ -177,9 +184,6 @@ fn scan(
                         const created_at = try std.fmt.allocPrint(allocator, "{f}", .{check_suite.createdAt});
                         defer allocator.free(created_at);
 
-                        const conclusion = if (check_suite.conclusion) |c| try std.fmt.allocPrint(allocator, "{f}", .{c}) else null;
-                        defer if (conclusion) |c| allocator.free(c);
-
                         const status = try std.fmt.allocPrint(allocator, "{f}", .{check_suite.status});
                         defer allocator.free(status);
 
@@ -189,8 +193,8 @@ fn scan(
                             commit.id,
                             check_suite.app.id,
                             created_at,
-                            conclusion,
                             status,
+                            if (check_suite.conclusion) |c| @tagName(c) else null,
                         });
                     }
                 }
@@ -208,9 +212,6 @@ fn scan(
                         const completed_at = if (check_run.completedAt) |c| try std.fmt.allocPrint(allocator, "{f}", .{c}) else null;
                         defer if (completed_at) |c| allocator.free(c);
 
-                        const status = try std.fmt.allocPrint(allocator, "{f}", .{check_run.status});
-                        defer allocator.free(status);
-
                         try Db.queries.CheckRun.upsert.exec(db_conn, .{
                             check_run.id,
                             check_suite.id,
@@ -218,7 +219,8 @@ fn scan(
                             started_at,
                             completed_at,
                             check_run.externalId,
-                            status,
+                            @tagName(check_run.status),
+                            if (check_run.conclusion) |c| @tagName(c) else null,
                         });
                     }
 
@@ -244,6 +246,7 @@ fn scan(
                                 "{?f}",
                                 "{s}",
                                 "{f}",
+                                "{?f}",
                                 "{f}",
                                 "{?f}",
                                 "{?d}",
@@ -258,6 +261,7 @@ fn scan(
                                 check_suite.conclusion,
                                 check_run.name,
                                 check_run.status,
+                                check_run.conclusion,
                                 check_run.startedAt,
                                 check_run.completedAt,
                                 if (check_run_ns) |c| @divFloor(c, std.time.ns_per_s) else null,
@@ -267,7 +271,54 @@ fn scan(
                     }
                 }
             }
+
+            try refreshMetrics(allocator, metrics, db_conn);
+            try metrics.write(stdout_w);
         }
+    }
+}
+
+fn refreshMetrics(allocator: std.mem.Allocator, metrics: *Metrics, db_conn: zqlite.Conn) !void {
+    {
+        var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(allocator, db_conn, .{});
+        errdefer rows.deinit();
+
+        while (try rows.next()) |row| {
+            defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+            try metrics.pull_requests.set(.{
+                .repo = row.repo,
+                .state = std.meta.stringToEnum(api.types.PullRequestState, row.state).?,
+            }, @intCast(row.count));
+        }
+
+        try rows.deinitErr();
+    }
+
+    {
+        var rows = try Db.queries.checkRunCountGroupedByRepoAndState.queryIterator(allocator, db_conn, .{});
+        errdefer rows.deinit();
+
+        while (try rows.next()) |row| {
+            defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+            try metrics.check_runs.set(.{
+                .repo = row.repo,
+                .state = std.meta.stringToEnum(Metrics.CheckState, row.state).?,
+            }, @intCast(row.count));
+        }
+
+        try rows.deinitErr();
+    }
+
+    {
+        var rows = try Db.queries.timeToFix.queryIterator(allocator, db_conn, .{});
+        errdefer rows.deinit();
+
+        while (try rows.next()) |row| {
+            defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+            try metrics.time_to_fix.observe(.{ .repo = row.repo }, @intCast(row.time_to_fix_seconds));
+        }
+
+        try rows.deinitErr();
     }
 }
 

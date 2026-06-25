@@ -24,6 +24,10 @@
             .url = "git+https://github.com/dermetfan/utils.zig#5817eeb7a33a8886aba1d974f8b4df4fe7afb4c4",
             .hash = "utils-0.0.0-5JJlD-CwAgBWxro7Qd2EPYRnebBuWNeZRFjfGVZNgMIE",
         },
+        .metrics = .{
+            .url = "git+https://github.com/karlseguin/metrics.zig#1621f82e7ecf2b3dddf5730bf52761af354a7080",
+            .hash = "metrics-0.0.0-W7G4eJOgAQDBacPAeqGCaY8gV7zuddUQyikGNq7nDPds",
+        },
     },
     .paths = .{
         "build.zig",

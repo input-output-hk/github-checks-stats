@@ -24,7 +24,7 @@ pub const DateTime = struct {
 
     // TODO support time zones other than UTC
     pub fn format(self: @This(), writer: *std.Io.Writer) !void {
-        self.inner.strftime(writer, "%FT%T%z") catch return error.WriteFailed;
+        self.inner.gofmt(writer, "2006-01-02T15:04:05Z07:00") catch return error.WriteFailed;
     }
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {
@@ -72,6 +72,7 @@ pub const PullRequest = struct {
 
     number: Int,
     title: []const u8,
+    state: PullRequestState,
 };
 
 pub const Commit = struct {
@@ -135,8 +136,8 @@ pub const CheckSuite = struct {
     app: App,
     branch: ?Ref = null,
     creator: ?User = null,
-    conclusion: ?CheckConclusionState = null,
     status: CheckStatusState,
+    conclusion: ?CheckConclusionState = null,
     createdAt: DateTime,
     updatedAt: DateTime,
 };
@@ -150,4 +151,5 @@ pub const CheckRun = struct {
     completedAt: ?DateTime,
     externalId: ?[]const u8,
     status: CheckStatusState,
+    conclusion: ?CheckConclusionState = null,
 };
