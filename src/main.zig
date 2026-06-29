@@ -92,22 +92,6 @@ pub fn main(init: std.process.Init) !void {
     var metrics = try Metrics.init(init.gpa, init.io, .{});
     defer metrics.deinit();
 
-    try stdout_w.print(utils.mem.comptimeJoin(&.{
-        "repo_owner",
-        "repo_name",
-        "pr_number",
-        "commit_oid",
-        "check_suite_app_name",
-        "check_suite_status",
-        "check_suite_conclusion",
-        "check_run_name",
-        "check_run_status",
-        "check_run_conclusion",
-        "check_run_started_at",
-        "check_run_completed_at",
-        "check_run_duration_seconds",
-    }, "\t") ++ "\n", .{});
-
     switch (options.verb.?) {
         .scan => try scan(init.gpa, &client, db_conn, stdout_w, &metrics, options.positionals, null), // TODO retry on rate limit
         .watch => |watch| {
@@ -234,40 +218,6 @@ fn scan(
                             check_run.resourcePath,
                             if (check_run_ns) |c| std.Io.Duration.fromNanoseconds(@intCast(c)) else null,
                         });
-
-                        try stdout_w.print(
-                            utils.mem.comptimeJoin(&.{
-                                "{s}",
-                                "{s}",
-                                "{d}",
-                                "{s}",
-                                "{s}",
-                                "{f}",
-                                "{?f}",
-                                "{s}",
-                                "{f}",
-                                "{?f}",
-                                "{f}",
-                                "{?f}",
-                                "{?d}",
-                            }, "\t") ++ "\n",
-                            .{
-                                repo_owner,
-                                repo_name,
-                                pr.number,
-                                commit.oid,
-                                check_suite.app.name,
-                                check_suite.status,
-                                check_suite.conclusion,
-                                check_run.name,
-                                check_run.status,
-                                check_run.conclusion,
-                                check_run.startedAt,
-                                check_run.completedAt,
-                                if (check_run_ns) |c| @divFloor(c, std.time.ns_per_s) else null,
-                            },
-                        );
-                        try stdout_w.flush();
                     }
                 }
             }
