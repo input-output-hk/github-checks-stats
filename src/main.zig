@@ -1,6 +1,7 @@
-const builtin = @import("builtin");
 const std = @import("std");
+const builtin = @import("builtin");
 const args = @import("args");
+const httpz = @import("httpz");
 const utils = @import("utils");
 const zqlite = @import("zqlite");
 const zqlite_typed = @import("zqlite-typed");
@@ -10,10 +11,6 @@ const Db = @import("Db.zig");
 const Metrics = @import("Metrics.zig");
 
 pub fn main(init: std.process.Init) !void {
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout = std.Io.File.stdout().writer(init.io, &stdout_buffer);
-    const stdout_w = &stdout.interface;
-
     var stderr_buffer: [1024]u8 = undefined;
     var stderr = std.Io.File.stderr().writer(init.io, &stderr_buffer);
     const stderr_w = &stderr.interface;
@@ -46,14 +43,17 @@ pub fn main(init: std.process.Init) !void {
         },
         watch: struct {
             interval: u32 = defaults.interval,
+            @"metrics-listen": ?[]const u8 = defaults.@"metrics-listen",
 
             const defaults = .{
                 .interval = 300,
+                .@"metrics-listen" = null,
             };
 
             pub const meta = .{
                 .option_docs = .{
                     .interval = std.fmt.comptimePrint("seconds to sleep between iterations ({d})", .{defaults.interval}),
+                    .@"metrics-listen" = "listen address and port or unix domain socket after `unix:` prefix to bind for metrics",
                 },
             };
         },
@@ -99,21 +99,48 @@ pub fn main(init: std.process.Init) !void {
     );
     defer client.deinit();
 
-    var metrics = try Metrics.init(init.gpa, init.io, .{});
-    defer metrics.deinit();
-
     switch (options.verb.?) {
-        .scan => try scan(init.gpa, &client, db_conn, stdout_w, &metrics, options.positionals, null), // TODO retry on rate limit
+        .scan => try scan(init.gpa, &client, db_conn, options.positionals, null), // TODO retry on rate limit
         .watch => |watch| {
+            var metrics = if (watch.@"metrics-listen" != null) try Metrics.init(init.gpa, init.io, .{}) else null;
+            defer if (metrics) |*m| m.deinit();
+
+            var server = if (watch.@"metrics-listen") |metrics_listen|
+                try httpz.Server(ServerContext).init(init.io, init.gpa, .{
+                    .address = if (std.mem.cutPrefix(u8, metrics_listen, "unix:")) |socket_path|
+                        .{ .unix = socket_path }
+                    else
+                        .{ .ip = try .parseLiteral(metrics_listen) },
+                }, .{
+                    .io = init.io,
+                    .metrics = &metrics.?,
+                    .db_pool = db.pool,
+                })
+            else
+                null;
+            defer if (server) |*s| {
+                s.stop();
+                s.deinit();
+            };
+
+            const server_thread = if (server) |*s| server_thread: {
+                var router = try s.router(.{});
+                router.get("/metrics", serveGetMetrics, .{});
+
+                break :server_thread try s.listenInNewThread();
+            } else null;
+
             const interval = std.Io.Duration.fromSeconds(@as(i64, watch.interval));
             const open_states: []const api.types.PullRequestState = &.{.OPEN};
             while (true) {
-                scan(init.gpa, &client, db_conn, stdout_w, &metrics, options.positionals, open_states) catch |err| switch (err) {
+                scan(init.gpa, &client, db_conn, options.positionals, open_states) catch |err| switch (err) {
                     error.RateLimited => std.log.warn("rate limited; sleeping {f} before retry", .{interval}),
                     else => |e| return e,
                 };
                 try std.Io.sleep(init.io, interval, .awake);
             }
+
+            if (server_thread) |st| st.join();
         },
     }
 }
@@ -122,8 +149,6 @@ fn scan(
     allocator: std.mem.Allocator,
     client: *api.Client,
     db_conn: zqlite.Conn,
-    stdout_w: *std.Io.Writer,
-    metrics: *Metrics,
     repos: []const []const u8,
     states: ?[]const api.types.PullRequestState,
 ) !void {
@@ -231,9 +256,6 @@ fn scan(
                     }
                 }
             }
-
-            try refreshMetrics(allocator, metrics, db_conn);
-            try metrics.write(stdout_w);
         }
     }
 }
@@ -280,6 +302,22 @@ fn refreshMetrics(allocator: std.mem.Allocator, metrics: *Metrics, db_conn: zqli
 
         try rows.deinitErr();
     }
+}
+
+const ServerContext = struct {
+    io: std.Io,
+    metrics: *Metrics,
+    db_pool: *zqlite.Pool,
+};
+
+fn serveGetMetrics(ctx: ServerContext, req: *httpz.Request, res: *httpz.Response) !void {
+    const db_conn = try ctx.db_pool.acquire(ctx.io);
+    defer ctx.db_pool.release(ctx.io, db_conn);
+
+    try refreshMetrics(req.arena, ctx.metrics, db_conn);
+
+    res.content_type = .TEXT;
+    try ctx.metrics.write(res.writer());
 }
 
 test {
