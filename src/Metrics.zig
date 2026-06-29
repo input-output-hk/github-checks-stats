@@ -1,6 +1,7 @@
 const std = @import("std");
-const utils = @import("utils");
+
 const m = @import("metrics");
+const utils = @import("utils");
 
 const types = @import("api.zig").types;
 

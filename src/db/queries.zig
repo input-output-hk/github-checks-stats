@@ -1,17 +1,17 @@
 const std = @import("std");
+
 const utils = @import("utils");
 const zqlite_typed = @import("zqlite-typed");
-
-// Use only GitHub's primitive types.
-// GraphQL structs are specific to their query.
-const types = @import("../api.zig").types;
-
 const Query = zqlite_typed.Query;
 const Exec = zqlite_typed.Exec;
 const SimpleInsert = zqlite_typed.SimpleInsert;
 const SimpleUpsert = zqlite_typed.SimpleUpsert;
 const MergedTables = zqlite_typed.MergedTables;
 const columnList = zqlite_typed.columnList;
+
+// Use only GitHub's primitive types.
+// GraphQL structs are specific to their query.
+const types = @import("../api.zig").types;
 
 pub const Repository = struct {
     id: types.Id,
