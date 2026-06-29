@@ -19,15 +19,21 @@ pub fn main(init: std.process.Init) !void {
     const stderr_w = &stderr.interface;
 
     const Options = struct {
-        db: [:0]const u8 = "github-checks-stats.sqlite",
-        @"user-agent": ?[]const u8 = null,
-        @"token-file": ?[]const u8 = null,
+        db: [:0]const u8 = defaults.db,
+        @"user-agent": ?[]const u8 = defaults.@"user-agent",
+        @"token-file": ?[]const u8 = defaults.@"token-file",
+
+        const defaults = .{
+            .db = "github-checks-stats.sqlite",
+            .@"user-agent" = null,
+            .@"token-file" = null,
+        };
 
         pub const meta = .{
-            .usage_summary = "[options] <scan|watch [--interval SECS]> REPO...",
+            .usage_summary = "[OPTION]... <scan|watch> [VERB_OPTION]... REPO...",
             .full_text = "Collect statistics about GitHub Checks",
             .option_docs = .{
-                .db = "path to state database",
+                .db = "path to state database (" ++ defaults.db ++ ")",
                 .@"user-agent" = "User-Agent header to send, may be needed to authenticate as a GitHub App",
                 .@"token-file" = "file to read a token from to authorize with",
             },
@@ -39,11 +45,15 @@ pub fn main(init: std.process.Init) !void {
             pub const meta = .{};
         },
         watch: struct {
-            interval: u32 = 300,
+            interval: u32 = defaults.interval,
+
+            const defaults = .{
+                .interval = 300,
+            };
 
             pub const meta = .{
                 .option_docs = .{
-                    .interval = "seconds to sleep between iterations (default 300)",
+                    .interval = std.fmt.comptimePrint("seconds to sleep between iterations ({d})", .{defaults.interval}),
                 },
             };
         },
