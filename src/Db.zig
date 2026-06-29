@@ -1,9 +1,10 @@
 const std = @import("std");
+
+const c = @import("c");
 const utils = @import("utils");
 const zqlite = @import("zqlite");
 const zqlite_typed = @import("zqlite-typed");
 
-const c = @import("c");
 pub const queries = @import("db/queries.zig");
 
 pool: *zqlite.Pool,

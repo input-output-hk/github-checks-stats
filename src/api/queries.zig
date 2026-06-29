@@ -2,9 +2,7 @@ const std = @import("std");
 
 const api = @import("../api.zig");
 const types = api.types;
-
 const Client = api.Client;
-
 const clone = api.clone;
 const cloneLeaky = api.cloneLeaky;
 const Cloned = api.Cloned;

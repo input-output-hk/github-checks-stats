@@ -1,10 +1,9 @@
-const builtin = @import("builtin");
 const std = @import("std");
-
-pub const types = @import("api/types.zig");
-pub const queries = @import("api/queries.zig");
+const builtin = @import("builtin");
 
 pub const Client = @import("api/Client.zig");
+pub const queries = @import("api/queries.zig");
+pub const types = @import("api/types.zig");
 
 pub const peek_only = builtin.mode == .Debug;
 
