@@ -46,6 +46,34 @@ pub fn fetchRepoByFullName(
     return try clone(allocator, response.value.repository.?);
 }
 
+pub fn fetchPullRequestsByIds(
+    allocator: std.mem.Allocator,
+    client: *Client,
+    ids: []const types.Id,
+) !Cloned([]const types.PullRequest) {
+    const payload = try std.json.Stringify.valueAlloc(allocator, .{
+        .query = "" ++
+            \\query(
+            \\  $ids: [ID!]!
+            \\) {
+            \\  nodes(ids: $ids) {
+            \\    ... on PullRequest
+        ++ " " ++ comptime api.graphqlPretty(types.PullRequest, "  ", 3) ++ "\n" ++
+            \\  }
+            \\}
+        ,
+        .variables = .{
+            .ids = ids,
+        },
+    }, .{});
+    defer allocator.free(payload);
+
+    const response = try client.query(allocator, struct { nodes: []const types.PullRequest }, payload);
+    defer response.deinit();
+
+    return try clone(allocator, response.value.nodes);
+}
+
 pub fn fetchPullRequestsByRepo(
     allocator: std.mem.Allocator,
     client: *Client,

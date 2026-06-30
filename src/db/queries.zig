@@ -74,6 +74,46 @@ pub const PullRequest = struct {
             struct { types.Id },
         );
     }
+
+    pub fn SelectByRepoAndStates(columns: []const Column, states: []const types.PullRequestState) type {
+        return Query(
+            \\SELECT
+        ++ " " ++ columnList(table, columns) ++
+            \\
+            \\FROM "
+        ++ table ++
+            \\"
+            \\JOIN "
+        ++ Repository.table ++
+            \\" ON
+        ++ " " ++ columnList(Repository.table, [_]Repository.Column{.id}) ++ " = " ++ columnList(table, [_]Column{.repository}) ++
+            \\
+            \\WHERE
+            \\
+        ++ columnList(Repository.table, [_]Repository.Column{.owner}) ++
+            \\ = ?
+            \\  AND
+        ++ " " ++ columnList(Repository.table, [_]Repository.Column{.name}) ++
+            \\ = ?
+            \\  AND
+        ++ " " ++ columnList(table, [_]Column{.state}) ++
+            \\ IN (
+        ++ in: {
+            var tags: [states.len][]const u8 = undefined;
+            for (&tags, states) |*tag, state|
+                tag.* = "'" ++ @tagName(state) ++ "'";
+            break :in utils.mem.comptimeJoin(&tags, ", ");
+        } ++
+            \\)
+        ,
+            true,
+            utils.meta.SubStruct(@This(), .initMany(columns)),
+            struct {
+                @FieldType(Repository, "owner"),
+                @FieldType(Repository, "name"),
+            },
+        );
+    }
 };
 
 pub const Commit = struct {
@@ -252,7 +292,7 @@ pub const checkRunCountGroupedByRepoAndState = Query(
 ++ " " ++ columnList("repo", [_]Repository.Column{.id}) ++ " = " ++ columnList("cs", [_]CheckSuite.Column{.repository}) ++
     \\
     \\GROUP BY
-++ " " ++ columnList("repo", [_]Repository.Column{.id}) ++ ", " ++ columnList("cr", [_]CheckRun.Column{.status, .conclusion}),
+++ " " ++ columnList("repo", [_]Repository.Column{.id}) ++ ", " ++ columnList("cr", [_]CheckRun.Column{ .status, .conclusion }),
     true,
     struct {
         repo: []const u8,
