@@ -101,7 +101,7 @@ pub fn main(init: std.process.Init) !void {
     defer client.deinit();
 
     switch (options.verb.?) {
-        .scan => try scan(init.gpa, &client, db_conn, options.positionals, null), // TODO retry on rate limit
+        .scan => try scan(init.gpa, &client, db_conn, options.positionals, true), // TODO retry on rate limit
         .watch => |watch| {
             var metrics = if (watch.@"metrics-listen" != null) try Metrics.init(init.gpa, init.io, .{}) else null;
             defer if (metrics) |*m| m.deinit();
@@ -132,9 +132,8 @@ pub fn main(init: std.process.Init) !void {
             } else null;
 
             const interval = std.Io.Duration.fromSeconds(@as(i64, watch.interval));
-            const open_states: []const api.types.PullRequestState = &.{.OPEN};
             while (true) {
-                scan(init.gpa, &client, db_conn, options.positionals, open_states) catch |err| switch (err) {
+                scan(init.gpa, &client, db_conn, options.positionals, false) catch |err| switch (err) {
                     error.RateLimited => std.log.warn("rate limited; sleeping {f} before retry", .{interval}),
                     else => |e| return e,
                 };
@@ -151,7 +150,7 @@ fn scan(
     client: *api.Client,
     db_conn: zqlite.Conn,
     repos: []const []const u8,
-    states: ?[]const api.types.PullRequestState,
+    historical: bool,
 ) !void {
     for (repos) |repo_full| {
         const repo_owner, const repo_name = repo: {
@@ -172,92 +171,146 @@ fn scan(
 
         std.log.info("/{s}/{s}: scanning for pull requests…", .{ repo_owner, repo_name });
 
-        const prs = try api.queries.fetchPullRequestsByRepo(allocator, client, repo_owner, repo_name, states);
-        defer prs.deinit();
+        const prs_open = try api.queries.fetchPullRequestsByRepo(allocator, client, repo.value.owner.login, repo.value.name, if (historical) null else &.{.OPEN});
+        defer prs_open.deinit();
 
-        for (prs.value) |pr|
-            try Db.queries.PullRequest.upsert.exec(db_conn, .{ pr.id, repo.value.id, pr.number, @tagName(pr.state) });
+        // Some PRs could have been closed since we last fetched
+        // and are hence not included in the response from GitHub.
+        // They are still open in our database though,
+        // so fetch them again to update them in the database.
+        const prs_closed = if (!historical) prs_closed: {
+            var prs_db_open = try Db.queries.PullRequest.SelectByRepoAndStates(
+                &.{.id},
+                &.{.OPEN},
+            ).queryIterator(allocator, db_conn, .{
+                repo.value.owner.login,
+                repo.value.name,
+            });
+            errdefer prs_db_open.deinit();
 
-        for (prs.value) |pr| {
-            std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
+            var prs_closed_ids = std.ArrayList(api.types.Id).empty;
+            defer {
+                for (prs_closed_ids.items) |id| allocator.free(id);
+                prs_closed_ids.deinit(allocator);
+            }
 
-            const commits = try api.queries.fetchCommitsByPullRequestId(allocator, client, pr.id);
-            defer commits.deinit();
+            while (try prs_db_open.next()) |pr_db_open| {
+                defer zqlite_typed.freeStructFromRow(@TypeOf(pr_db_open), allocator, pr_db_open);
 
-            for (commits.value) |commit|
-                try Db.queries.Commit.upsert.exec(db_conn, .{ commit.id, commit.oid });
+                // XXX It would be nicer if we could exclude
+                // the open PRs that we just fetched from the API
+                // from the DB query using the `NOT IN` operator
+                // instead of filtering here, but that requires
+                // passing a runtime-known list of parameters (not supported by zqlite_typed)
+                // or serializing the list as JSON to pass into the query (ugly).
+                for (prs_open.value) |pr_open| {
+                    if (std.mem.eql(u8, pr_open.id, pr_db_open.id))
+                        break; // PR is still open.
+                } else {
+                    const id = try allocator.dupe(u8, pr_db_open.id);
+                    errdefer allocator.free(id);
 
-            for (commits.value) |commit| {
-                std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
-
-                const check_suites = try api.queries.fetchCheckSuitesByCommitId(allocator, client, commit.id);
-                defer check_suites.deinit();
-
-                for (check_suites.value) |check_suite| {
-                    try Db.queries.App.upsert.exec(db_conn, .{
-                        check_suite.app.id,
-                        check_suite.app.slug,
-                        check_suite.app.name,
-                    });
-
-                    {
-                        const created_at = try std.fmt.allocPrint(allocator, "{f}", .{check_suite.createdAt});
-                        defer allocator.free(created_at);
-
-                        const status = try std.fmt.allocPrint(allocator, "{f}", .{check_suite.status});
-                        defer allocator.free(status);
-
-                        try Db.queries.CheckSuite.upsert.exec(db_conn, .{
-                            check_suite.id,
-                            repo.value.id,
-                            commit.id,
-                            check_suite.app.id,
-                            created_at,
-                            status,
-                            if (check_suite.conclusion) |c| @tagName(c) else null,
-                        });
-                    }
-                }
-
-                for (check_suites.value) |check_suite| {
-                    std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
-
-                    const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(allocator, client, check_suite.id);
-                    defer check_runs.deinit();
-
-                    for (check_runs.value) |check_run| {
-                        const started_at = try std.fmt.allocPrint(allocator, "{f}", .{check_run.startedAt});
-                        defer allocator.free(started_at);
-
-                        const completed_at = if (check_run.completedAt) |c| try std.fmt.allocPrint(allocator, "{f}", .{c}) else null;
-                        defer if (completed_at) |c| allocator.free(c);
-
-                        try Db.queries.CheckRun.upsert.exec(db_conn, .{
-                            check_run.id,
-                            check_suite.id,
-                            check_run.name,
-                            started_at,
-                            completed_at,
-                            check_run.externalId,
-                            @tagName(check_run.status),
-                            if (check_run.conclusion) |c| @tagName(c) else null,
-                        });
-                    }
-
-                    for (check_runs.value) |check_run| {
-                        const check_run_ns = if (check_run.completedAt) |completedAt| duration: {
-                            std.debug.assert(check_run.startedAt.inner.offset == completedAt.inner.offset);
-                            break :duration completedAt.inner.instant().timestamp - check_run.startedAt.inner.instant().timestamp;
-                        } else null;
-
-                        std.log.info("{s}: {?f}", .{
-                            check_run.resourcePath,
-                            if (check_run_ns) |c| std.Io.Duration.fromNanoseconds(@intCast(c)) else null,
-                        });
-                    }
+                    try prs_closed_ids.append(allocator, id);
                 }
             }
-        }
+
+            try prs_db_open.deinitErr();
+
+            break :prs_closed try api.queries.fetchPullRequestsByIds(allocator, client, prs_closed_ids.items);
+        } else null;
+        defer if (prs_closed) |pr| pr.deinit();
+
+        for ([_][]const api.types.PullRequest{
+            prs_open.value,
+            if (prs_closed) |pr| pr.value else &.{},
+        }) |prs|
+            for (prs) |pr|
+                try Db.queries.PullRequest.upsert.exec(db_conn, .{ pr.id, repo.value.id, pr.number, @tagName(pr.state) });
+
+        for ([_][]const api.types.PullRequest{
+            prs_open.value,
+            if (prs_closed) |pr| pr.value else &.{},
+        }) |prs|
+            for (prs) |pr| {
+                std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
+
+                const commits = try api.queries.fetchCommitsByPullRequestId(allocator, client, pr.id);
+                defer commits.deinit();
+
+                for (commits.value) |commit|
+                    try Db.queries.Commit.upsert.exec(db_conn, .{ commit.id, commit.oid });
+
+                for (commits.value) |commit| {
+                    std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
+
+                    const check_suites = try api.queries.fetchCheckSuitesByCommitId(allocator, client, commit.id);
+                    defer check_suites.deinit();
+
+                    for (check_suites.value) |check_suite| {
+                        try Db.queries.App.upsert.exec(db_conn, .{
+                            check_suite.app.id,
+                            check_suite.app.slug,
+                            check_suite.app.name,
+                        });
+
+                        {
+                            const created_at = try std.fmt.allocPrint(allocator, "{f}", .{check_suite.createdAt});
+                            defer allocator.free(created_at);
+
+                            const status = try std.fmt.allocPrint(allocator, "{f}", .{check_suite.status});
+                            defer allocator.free(status);
+
+                            try Db.queries.CheckSuite.upsert.exec(db_conn, .{
+                                check_suite.id,
+                                repo.value.id,
+                                commit.id,
+                                check_suite.app.id,
+                                created_at,
+                                status,
+                                if (check_suite.conclusion) |c| @tagName(c) else null,
+                            });
+                        }
+                    }
+
+                    for (check_suites.value) |check_suite| {
+                        std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
+
+                        const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(allocator, client, check_suite.id);
+                        defer check_runs.deinit();
+
+                        for (check_runs.value) |check_run| {
+                            const started_at = try std.fmt.allocPrint(allocator, "{f}", .{check_run.startedAt});
+                            defer allocator.free(started_at);
+
+                            const completed_at = if (check_run.completedAt) |c| try std.fmt.allocPrint(allocator, "{f}", .{c}) else null;
+                            defer if (completed_at) |c| allocator.free(c);
+
+                            try Db.queries.CheckRun.upsert.exec(db_conn, .{
+                                check_run.id,
+                                check_suite.id,
+                                check_run.name,
+                                started_at,
+                                completed_at,
+                                check_run.externalId,
+                                @tagName(check_run.status),
+                                if (check_run.conclusion) |c| @tagName(c) else null,
+                            });
+                        }
+
+                        for (check_runs.value) |check_run| {
+                            const check_run_ns = if (check_run.completedAt) |completedAt| duration: {
+                                std.debug.assert(check_run.startedAt.inner.offset == completedAt.inner.offset);
+                                break :duration completedAt.inner.instant().timestamp - check_run.startedAt.inner.instant().timestamp;
+                            } else null;
+
+                            std.log.info("{s}: {?f}", .{
+                                check_run.resourcePath,
+                                if (check_run_ns) |c| std.Io.Duration.fromNanoseconds(@intCast(c)) else null,
+                            });
+                        }
+                    }
+                }
+            };
     }
 }
 
