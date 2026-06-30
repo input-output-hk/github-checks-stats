@@ -101,7 +101,20 @@ pub fn main(init: std.process.Init) !void {
     defer client.deinit();
 
     switch (options.verb.?) {
-        .scan => try scan(init.gpa, &client, db_conn, options.positionals, true), // TODO retry on rate limit
+        .scan => {
+            while (true) {
+                scan(init.gpa, &client, db_conn, options.positionals, true) catch |err| switch (err) {
+                    error.RateLimited => {
+                        const duration = std.Io.Timestamp.now(init.io, .real).durationTo(client.rate_limit_reset.?);
+                        std.log.warn("rate limited; continuing in {f}", .{duration});
+                        try std.Io.sleep(init.io, duration, .real);
+                        continue;
+                    },
+                    else => |e| return e,
+                };
+                break;
+            }
+        },
         .watch => |watch| {
             var metrics = if (watch.@"metrics-listen" != null) try Metrics.init(init.gpa, init.io, .{}) else null;
             defer if (metrics) |*m| m.deinit();
@@ -134,7 +147,12 @@ pub fn main(init: std.process.Init) !void {
             const interval = std.Io.Duration.fromSeconds(@as(i64, watch.interval));
             while (true) {
                 scan(init.gpa, &client, db_conn, options.positionals, false) catch |err| switch (err) {
-                    error.RateLimited => std.log.warn("rate limited; sleeping {f} before retry", .{interval}),
+                    error.RateLimited => {
+                        const duration = std.Io.Timestamp.now(init.io, .real).durationTo(client.rate_limit_reset.?);
+                        std.log.warn("rate limited; continuing in {f}", .{duration});
+                        try std.Io.sleep(init.io, duration, .real);
+                        continue;
+                    },
                     else => |e| return e,
                 };
                 try std.Io.sleep(init.io, interval, .awake);
