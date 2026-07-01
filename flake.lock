@@ -198,11 +198,11 @@
         "zig2nix": "zig2nix"
       },
       "locked": {
-        "lastModified": 1782300430,
-        "narHash": "sha256-iGOqC2XEg5UaPyrvmXM7sUtkELQjy5TTC7Wu1P3fnEc=",
+        "lastModified": 1782937587,
+        "narHash": "sha256-6qtmXtIQnrkd8oIRLWO2LyREoxRmOo2byi1W6xCTDmI=",
         "owner": "dermetfan",
         "repo": "utils.zig",
-        "rev": "0c8e91f10b8fa62339d4c8f4548692ba2a84f0b6",
+        "rev": "08b2faf97147a8a2be698563523aed82444e8535",
         "type": "github"
       },
       "original": {
@@ -220,11 +220,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1781756250,
-        "narHash": "sha256-8XLem9KfbJ6a2QZs0dmtR3N+9UBTJuqJ4+O0G3AiqGI=",
+        "lastModified": 1782359587,
+        "narHash": "sha256-brYgpLlU3fRC1xR5djHmFBBcB5+u2fjPyNqa8qP/wV8=",
         "owner": "Cloudef",
         "repo": "zig2nix",
-        "rev": "9aaf3148100922505ccffb331fa8136cfc5fbe0e",
+        "rev": "e01aecf3bfd66146f5c9c972f20542567b10f6ff",
         "type": "github"
       },
       "original": {
