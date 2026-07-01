@@ -10,7 +10,7 @@
           ../src
         ];
 
-        zigDepsHash = "sha256-Rg/EAVtez/tJdHXZ9m97N5wtDwWyGKc5B6EWmWLG9TA=";
+        zigDepsHash = "sha256-8ZGMsLRB4sQtHRhCSfULmplXTaDC5Oc0IzwI92VevEs=";
 
         buildInputs = with pkgs; [
           sqlite.dev
