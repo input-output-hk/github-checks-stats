@@ -349,12 +349,13 @@ fn refreshMetrics(allocator: std.mem.Allocator, metrics: *Metrics, db_conn: zqli
     }
 
     {
-        var rows = try Db.queries.checkRunCountGroupedByRepoAndState.queryIterator(allocator, db_conn, .{});
+        var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{});
         errdefer rows.deinit();
 
         while (try rows.next()) |row| {
             defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
             try metrics.check_runs.set(.{
+                .app = row.app_slug,
                 .repo = row.repo,
                 .state = std.meta.stringToEnum(Metrics.CheckState, row.state).?,
             }, @intCast(row.count));
@@ -369,7 +370,10 @@ fn refreshMetrics(allocator: std.mem.Allocator, metrics: *Metrics, db_conn: zqli
 
         while (try rows.next()) |row| {
             defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
-            try metrics.time_to_fix.observe(.{ .repo = row.repo }, @intCast(row.time_to_fix_seconds));
+            try metrics.time_to_fix.observe(.{
+                .app = row.app_slug,
+                .repo = row.repo,
+            }, @intCast(row.time_to_fix_seconds));
         }
 
         try rows.deinitErr();

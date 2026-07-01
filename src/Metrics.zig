@@ -5,13 +5,13 @@ const utils = @import("utils");
 
 const types = @import("api.zig").types;
 
-pull_requests: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ RepoLabel, struct {
+pull_requests: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.Repo, struct {
     state: types.PullRequestState,
 } })),
-check_runs: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ RepoLabel, struct {
+check_runs: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, struct {
     state: CheckState,
 } })),
-time_to_fix: m.HistogramVec(u64, RepoLabel, &.{
+time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo }), &.{
     5 * std.time.s_per_min,
     15 * std.time.s_per_min,
     30 * std.time.s_per_min,
@@ -31,9 +31,12 @@ time_to_fix: m.HistogramVec(u64, RepoLabel, &.{
     2 * std.time.s_per_week,
 }),
 
-const RepoLabel = struct { repo: []const u8 };
+const Labels = struct {
+    pub const App = struct { app: types.Id };
+    pub const Repo = struct { repo: []const u8 };
+};
 
-pub const CheckState = utils.enums.Merged(&.{types.CheckConclusionState, types.CheckStatusState}, true);
+pub const CheckState = utils.enums.Merged(&.{ types.CheckConclusionState, types.CheckStatusState }, true);
 
 pub fn deinit(self: *@This()) void {
     self.pull_requests.deinit();

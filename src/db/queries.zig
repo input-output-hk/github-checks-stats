@@ -181,7 +181,7 @@ pub const CheckSuite = struct {
     id: types.Id,
     repository: types.Id,
     commit: types.Id,
-    app: []const u8,
+    app: types.Id,
     created_at: []const u8, // TODO make this typed?
     status: []const u8, // TODO make this typed?
     conclusion: ?[]const u8, // TODO make this typed?
@@ -273,9 +273,10 @@ pub const pullRequestCountGroupedByRepoAndState = Query(
     @Tuple(&.{}),
 );
 
-pub const checkRunCountGroupedByRepoAndState = Query(
+pub const checkRunCountGroupedByAppAndRepoAndState = Query(
     \\SELECT
-++ " " ++ columnList("repo", [_]Repository.Column{.owner}) ++ " || '/' || " ++ columnList("repo", [_]Repository.Column{.name}) ++
+++ " " ++ columnList("app", [_]App.Column{.slug}) ++
+    ", " ++ columnList("repo", [_]Repository.Column{.owner}) ++ " || '/' || " ++ columnList("repo", [_]Repository.Column{.name}) ++
     ", coalesce(" ++ columnList("cr", [_]CheckRun.Column{ .conclusion, .status }) ++ ")" ++
     ", count(" ++ columnList("cr", [_]CheckRun.Column{.id}) ++ ")" ++
     \\
@@ -286,15 +287,22 @@ pub const checkRunCountGroupedByRepoAndState = Query(
 ++ CheckSuite.table ++
     \\" cs ON
 ++ " " ++ columnList("cs", [_]CheckSuite.Column{.id}) ++ " = " ++ columnList("cr", [_]CheckRun.Column{.suite}) ++
+    \\
     \\JOIN "
 ++ Repository.table ++
     \\" repo ON
 ++ " " ++ columnList("repo", [_]Repository.Column{.id}) ++ " = " ++ columnList("cs", [_]CheckSuite.Column{.repository}) ++
     \\
+    \\JOIN "
+++ App.table ++
+    \\" app ON
+++ " " ++ columnList("app", [_]App.Column{.id}) ++ " = " ++ columnList("cs", [_]CheckSuite.Column{.app}) ++
+    \\
     \\GROUP BY
-++ " " ++ columnList("repo", [_]Repository.Column{.id}) ++ ", " ++ columnList("cr", [_]CheckRun.Column{ .status, .conclusion }),
+++ " " ++ columnList("repo", [_]Repository.Column{.id}) ++ ", " ++ columnList("app", [_]App.Column{.slug}) ++ ", " ++ columnList("cr", [_]CheckRun.Column{ .status, .conclusion }),
     true,
     struct {
+        app_slug: @FieldType(App, "slug"),
         repo: []const u8,
         state: []const u8,
         count: i64,
@@ -343,7 +351,7 @@ pub const timeToFix = Query(
     \\)
     \\SELECT
     \\r.owner || '/' || r.name                                                AS repo,
-    \\a.slug                                                                  AS app,
+    \\a.slug                                                                  AS app_slug,
     \\c.name                                                                  AS check_run_name,
     \\c.first_fail_at,
     \\c.success_at,
@@ -359,10 +367,10 @@ pub const timeToFix = Query(
     true,
     struct {
         repo: []const u8,
-        check_suite_app_slug: []const u8,
+        app_slug: @FieldType(App, "slug"),
         check_run_name: []const u8,
-        check_run_first_fail_at: []const u8,
-        check_run_success_at: []const u8,
+        first_fail_at: []const u8,
+        success_at: []const u8,
         time_to_fix_seconds: i64,
     },
     @Tuple(&.{}),
