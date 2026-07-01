@@ -179,19 +179,23 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
             std.log.warn("GitHub responded with warning: {s}", .{warning_json});
         }
 
+        var rate_limited = false;
         for (parsed.value.errors) |err| {
-            const err_json = try std.json.Stringify.valueAlloc(allocator, err, .{ .whitespace = .indent_tab });
-            defer allocator.free(err_json);
-
-            std.log.err("GitHub responded with error: {s}", .{err_json});
-        }
-        for (parsed.value.errors) |err|
             if (if (err.type) |t| t == .RATE_LIMIT else false) {
-                if (self.rate_limit_reset == null)
-                    self.rate_limit_reset = std.Io.Timestamp.now(self.client.io, .real).addDuration(.fromSeconds(std.time.s_per_min));
-                std.debug.assert(self.rate_limit_reset != null);
-                return error.RateLimited;
-            };
+                rate_limited = true;
+            } else {
+                const err_json = try std.json.Stringify.valueAlloc(allocator, err, .{ .whitespace = .indent_tab });
+                defer allocator.free(err_json);
+
+                std.log.err("GitHub responded with error: {s}", .{err_json});
+            }
+        }
+        if (rate_limited) {
+            if (self.rate_limit_reset == null)
+                self.rate_limit_reset = std.Io.Timestamp.now(self.client.io, .real).addDuration(.fromSeconds(std.time.s_per_min));
+            std.debug.assert(self.rate_limit_reset != null);
+            return error.RateLimited;
+        }
         for (parsed.value.errors) |err| {
             if (err.locations != null or
                 err.path != null) continue;
