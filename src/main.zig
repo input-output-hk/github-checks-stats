@@ -155,6 +155,7 @@ pub fn main(init: std.process.Init) !void {
                     },
                     else => |e| return e,
                 };
+                std.log.info("next scan in {f}", .{interval});
                 try std.Io.sleep(init.io, interval, .awake);
             }
 
@@ -170,7 +171,7 @@ fn scan(
     repos: []const []const u8,
     historical: bool,
 ) !void {
-    for (repos) |repo_full| {
+    for (repos, 0..) |repo_full, repos_idx| {
         const repo_owner, const repo_name = repo: {
             errdefer std.log.err("malformed repository \"{s}\", must be of form \"foo/bar\"", .{repo_full});
             var iter = std.mem.splitScalar(u8, repo_full, '/');
@@ -238,18 +239,29 @@ fn scan(
         } else null;
         defer if (prs_closed) |pr| pr.deinit();
 
-        for ([_][]const api.types.PullRequest{
+        const prss = [_][]const api.types.PullRequest{
             prs_open.value,
             if (prs_closed) |pr| pr.value else &.{},
-        }) |prs|
+        };
+
+        for (prss) |prs|
             for (prs) |pr|
                 try Db.queries.PullRequest.upsert.exec(db_conn, .{ pr.id, repo.value.id, pr.number, @tagName(pr.state) });
 
-        for ([_][]const api.types.PullRequest{
-            prs_open.value,
-            if (prs_closed) |pr| pr.value else &.{},
-        }) |prs|
-            for (prs) |pr| {
+        const prs_count = prs_count: {
+            var count: usize = 0;
+            for (prss) |prs|
+                count += prs.len;
+            break :prs_count count;
+        };
+        for (prss, 0..) |prs, prss_idx| {
+            const prev_prs_count = prev_prs_count: {
+                var count: usize = 0;
+                for (0..prss_idx) |i|
+                    count += prss[i].len;
+                break :prev_prs_count count;
+            };
+            for (prs, 0..) |pr, prs_idx| {
                 std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
 
                 const commits = try api.queries.fetchCommitsByPullRequestId(allocator, client, pr.id);
@@ -258,7 +270,7 @@ fn scan(
                 for (commits.value) |commit|
                     try Db.queries.Commit.upsert.exec(db_conn, .{ commit.id, commit.oid });
 
-                for (commits.value) |commit| {
+                for (commits.value, 0..) |commit, commits_idx| {
                     std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
 
                     const check_suites = try api.queries.fetchCheckSuitesByCommitId(allocator, client, commit.id);
@@ -290,7 +302,7 @@ fn scan(
                         }
                     }
 
-                    for (check_suites.value) |check_suite| {
+                    for (check_suites.value, 0..) |check_suite, check_suites_idx| {
                         std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
 
                         const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(allocator, client, check_suite.id);
@@ -315,7 +327,7 @@ fn scan(
                             });
                         }
 
-                        for (check_runs.value) |check_run| {
+                        for (check_runs.value, 0..) |check_run, check_runs_idx| {
                             const check_run_ns = if (check_run.completedAt) |completedAt| duration: {
                                 std.debug.assert(check_run.startedAt.inner.offset == completedAt.inner.offset);
                                 break :duration completedAt.inner.instant().timestamp - check_run.startedAt.inner.instant().timestamp;
@@ -325,10 +337,21 @@ fn scan(
                                 check_run.resourcePath,
                                 if (check_run_ns) |c| std.Io.Duration.fromNanoseconds(@intCast(c)) else null,
                             });
+
+                            std.log.info("{s}: {d}/{d} check runs scanned", .{ check_suite.resourcePath, check_runs_idx + 1, check_runs.value.len });
                         }
+
+                        std.log.info("{s}: {d}/{d} check suites scanned", .{ commit.resourcePath, check_suites_idx + 1, check_suites.value.len });
                     }
+
+                    std.log.info("{s}: {d}/{d} commits scanned", .{ pr.resourcePath, commits_idx + 1, commits.value.len });
                 }
-            };
+
+                std.log.info("/{s}/{s}: {d}/{d} PRs scanned", .{ repo_owner, repo_name, prev_prs_count + prs_idx + 1, prs_count });
+            }
+        }
+
+        std.log.info("{d}/{d} repositories scanned", .{ repos_idx + 1, repos.len });
     }
 }
 
