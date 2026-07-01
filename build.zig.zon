@@ -17,12 +17,12 @@
             .hash = "zqlite-0.0.1-RWLaY64xnAAxsD2YNT8QqPMJUuaFv2GOzFRR4aGypJv3",
         },
         .zqlite_typed = .{
-            .url = "git+https://github.com/dermetfan/zqlite-typed.zig#38ed733185db70d9deba77e344d132e02ac1dc5c",
-            .hash = "zqlite_typed-0.0.0-la1GaEZIAAB9djBePrPVETjrHqfIZ-as7LHnLyDrDYr2",
+            .url = "git+https://github.com/dermetfan/zqlite-typed.zig#8dfdf11de823de2c39710390b16175d39bacba81",
+            .hash = "zqlite_typed-0.0.0-la1GaEFIAADJYGybV4f9M1C5bqLsdYSdJ_DMwy6vFLLU",
         },
         .utils = .{
-            .url = "git+https://github.com/dermetfan/utils.zig#5817eeb7a33a8886aba1d974f8b4df4fe7afb4c4",
-            .hash = "utils-0.0.0-5JJlD-CwAgBWxro7Qd2EPYRnebBuWNeZRFjfGVZNgMIE",
+            .url = "git+https://github.com/dermetfan/utils.zig#6fea29568f5172edbf6cd654eef93f71c8bd6911",
+            .hash = "utils-0.0.0-5JJlD3ywAgAGfSNq9QWuwRrN98X0hqDwLZCO8QfqKR2b",
         },
         .metrics = .{
             .url = "git+https://github.com/karlseguin/metrics.zig#1621f82e7ecf2b3dddf5730bf52761af354a7080",
