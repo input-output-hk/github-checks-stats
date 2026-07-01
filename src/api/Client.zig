@@ -186,7 +186,7 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
             std.log.err("GitHub responded with error: {s}", .{err_json});
         }
         for (parsed.value.errors) |err|
-            if (if (err.type) |t| t == .RATE_LIMITED else false) {
+            if (if (err.type) |t| t == .RATE_LIMIT else false) {
                 if (self.rate_limit_reset == null)
                     self.rate_limit_reset = std.Io.Timestamp.now(self.client.io, .real).addDuration(.fromSeconds(std.time.s_per_min));
                 std.debug.assert(self.rate_limit_reset != null);
@@ -250,7 +250,7 @@ const ResultError = struct {
     };
 
     pub const Type = union(enum) {
-        RATE_LIMITED,
+        RATE_LIMIT,
         _: []const u8,
 
         const Tag = std.meta.Tag(@This());
