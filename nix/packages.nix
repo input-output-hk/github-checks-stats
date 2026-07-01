@@ -12,9 +12,15 @@
 
         zigDepsHash = "sha256-8ZGMsLRB4sQtHRhCSfULmplXTaDC5Oc0IzwI92VevEs=";
 
+        nativeBuildInputs = with pkgs; [
+          pkg-config
+        ];
+
         buildInputs = with pkgs; [
           sqlite.dev
         ];
+
+        zigTarget = null;
       };
     };
   };

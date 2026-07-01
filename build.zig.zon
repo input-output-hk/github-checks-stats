@@ -21,7 +21,7 @@
             .hash = "zqlite_typed-0.0.0-la1GaEFIAADJYGybV4f9M1C5bqLsdYSdJ_DMwy6vFLLU",
         },
         .utils = .{
-            .url = "git+https://github.com/dermetfan/utils.zig#6fea29568f5172edbf6cd654eef93f71c8bd6911",
+            .url = "git+https://github.com/dermetfan/utils.zig#08b2faf97147a8a2be698563523aed82444e8535",
             .hash = "utils-0.0.0-5JJlD3ywAgAGfSNq9QWuwRrN98X0hqDwLZCO8QfqKR2b",
         },
         .metrics = .{
