@@ -131,9 +131,8 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
             _ = try response_body_reader.streamRemaining(&response_body.writer);
         }
 
-        const attempts_exceeded = attempt == max_attempts;
-
         if (response.head.status != .ok) {
+            const attempts_exceeded = attempt == max_attempts;
             const retry = response.head.status.class() == .server_error and !attempts_exceeded;
 
             const msg_fmt = "query failed with code {d} ({s}){s}\n{s}";
