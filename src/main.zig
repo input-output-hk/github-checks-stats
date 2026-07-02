@@ -122,7 +122,9 @@ pub fn main(init: std.process.Init) !void {
             }
         },
         .watch => |watch| {
-            var metrics = if (watch.@"metrics-listen" != null) try Metrics.init(init.gpa, init.io, .{}) else null;
+            var metrics = if (watch.@"metrics-listen" != null) try Metrics.init(init.gpa, init.io, .{
+                .prefix = "github_",
+            }) else null;
             defer if (metrics) |*m| m.deinit();
 
             var server = if (watch.@"metrics-listen") |metrics_listen|
