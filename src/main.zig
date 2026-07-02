@@ -47,7 +47,7 @@ pub fn main(init: std.process.Init) !void {
             @"metrics-listen": ?[]const u8 = defaults.@"metrics-listen",
 
             const defaults = .{
-                .interval = 300,
+                .interval = std.time.s_per_hour,
                 .@"metrics-listen" = null,
             };
 
