@@ -24,6 +24,7 @@
 
       imports = [
         nix/packages.nix
+        nix/nixosModules.nix
         nix/formatter.nix
         nix/devShells.nix
       ];
