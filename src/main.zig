@@ -416,7 +416,7 @@ fn refreshMetrics(allocator: std.mem.Allocator, metrics: *Metrics, db_conn: zqli
 
         while (try rows.next()) |row| {
             defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
-            try metrics.time_to_fix.observe(.{
+            try metrics.pull_request_time_to_fix.observe(.{
                 .app = row.app_slug,
                 .repo = row.repo,
             }, @intCast(row.time_to_fix_seconds));
