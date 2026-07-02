@@ -11,7 +11,7 @@ pull_requests: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.Repo, struct 
 check_runs: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, struct {
     state: CheckState,
 } })),
-time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo }), &.{
+pull_request_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo }), &.{
     5 * std.time.s_per_min,
     15 * std.time.s_per_min,
     30 * std.time.s_per_min,
@@ -41,7 +41,7 @@ pub const CheckState = utils.enums.Merged(&.{ types.CheckConclusionState, types.
 pub fn deinit(self: *@This()) void {
     self.pull_requests.deinit();
     self.check_runs.deinit();
-    self.time_to_fix.deinit();
+    self.pull_request_time_to_fix.deinit();
 }
 
 pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryOpts) !@This() {
@@ -52,7 +52,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
         .check_runs = try .init(allocator, io, "check_runs", .{
             .help = "Count of check runs",
         }, opts),
-        .time_to_fix = try .init(allocator, io, "time_to_fix_seconds", .{
+        .pull_request_time_to_fix = try .init(allocator, io, "pull_request_time_to_fix_seconds", .{
             .help = "Duration from first failing commit to first successful commit on a pull request",
         }, opts),
     };
