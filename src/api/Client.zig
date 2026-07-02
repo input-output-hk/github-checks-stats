@@ -60,7 +60,7 @@ pub const QueryError =
     std.Uri.ParseError ||
     std.http.Client.FetchError ||
     std.json.ParseError(std.json.Scanner) ||
-    error{ StreamTooLong, QueryFailed, RateLimited };
+    error{ HttpConnectionClosing, QueryAttemptsExceeded, RateLimited };
 
 /// If `error.RateLimited` is returned, `rate_limit_reset` is non-null.
 pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, payload: []const u8) QueryError!api.Cloned(Data) {
@@ -69,6 +69,8 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
 
     const max_attempts = 5;
     attempts: for (1..max_attempts + 1) |attempt| {
+        const last_attempt = attempt == max_attempts;
+
         response_body.clearRetainingCapacity();
 
         var request = try self.client.request(.POST, self.endpoint, .{
@@ -96,7 +98,13 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
 
         var response = response: {
             var redirect_buffer: [8000]u8 = undefined;
-            break :response try request.receiveHead(&redirect_buffer);
+            break :response request.receiveHead(&redirect_buffer) catch |err| switch (err) {
+                error.HttpConnectionClosing => {
+                    if (last_attempt) return err;
+                    continue :attempts;
+                },
+                else => |e| return e,
+            };
         };
 
         {
@@ -132,8 +140,7 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
         }
 
         if (response.head.status != .ok) {
-            const attempts_exceeded = attempt == max_attempts;
-            const retry = response.head.status.class() == .server_error and !attempts_exceeded;
+            const retry = response.head.status.class() == .server_error and !last_attempt;
 
             const msg_fmt = "query failed with code {d} ({s}){s}\n{s}";
             const msg_fmt_args = .{
@@ -143,13 +150,11 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
                 response_body.written(),
             };
 
-            if (retry) {
-                std.log.warn(msg_fmt, msg_fmt_args);
-                continue;
-            } else {
+            if (retry)
+                std.log.warn(msg_fmt, msg_fmt_args)
+            else
                 std.log.err(msg_fmt, msg_fmt_args);
-                break;
-            }
+            continue;
         }
 
         std.log.debug("GitHub response (raw): {s}", .{response_body.written()});
@@ -208,7 +213,7 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
         break;
     }
 
-    return error.QueryFailed;
+    return error.QueryAttemptsExceeded;
 }
 
 /// https://spec.graphql.org/October2021/#sec-Errors.Error-result-format
