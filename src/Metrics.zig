@@ -61,3 +61,93 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
 pub fn write(self: *const @This(), writer: *std.Io.Writer) !void {
     try m.write(self, writer);
 }
+
+const Metrics = @This();
+
+pub const Scrape = struct {
+    const zqlite = @import("zqlite");
+    const zqlite_typed = @import("zqlite-typed");
+
+    const Db = @import("Db.zig");
+
+    allocator: std.mem.Allocator,
+    mutex: std.Io.Mutex = .init,
+
+    time_to_fix_cursor: Db.queries.TimeToFixCursor = .{},
+
+    pub fn deinit(self: *@This()) void {
+        self.time_to_fix_cursor.deinit(self.allocator);
+    }
+
+    /// Thread safe via mutex. If this function was not protected by a mutex, the following would apply:
+    /// Must never be called concurrently as that will mess up the metrics because some events could be observed twice.
+    pub fn refreshMetrics(self: *@This(), arena: std.mem.Allocator, io: std.Io, metrics: *Metrics, db_conn: zqlite.Conn) !void {
+        try self.mutex.lock(io);
+        defer self.mutex.unlock(io);
+
+        {
+            var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(arena, db_conn, .{});
+            errdefer rows.deinit();
+
+            while (try rows.next()) |row| {
+                defer zqlite_typed.freeStructFromRow(@TypeOf(row), arena, row);
+                try metrics.pull_requests.set(.{
+                    .repo = row.repo,
+                    .state = std.meta.stringToEnum(types.PullRequestState, row.state).?,
+                }, @intCast(row.count));
+            }
+
+            try rows.deinitErr();
+        }
+
+        {
+            var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(arena, db_conn, .{});
+            errdefer rows.deinit();
+
+            while (try rows.next()) |row| {
+                defer zqlite_typed.freeStructFromRow(@TypeOf(row), arena, row);
+                try metrics.check_runs.set(.{
+                    .app = row.app_slug,
+                    .repo = row.repo,
+                    .state = std.meta.stringToEnum(Metrics.CheckState, row.state).?,
+                }, @intCast(row.count));
+            }
+
+            try rows.deinitErr();
+        }
+
+        {
+            var rows = try Db.queries.timeToFix.queryIterator(arena, db_conn, self.time_to_fix_cursor.tuple());
+            errdefer rows.deinit();
+
+            while (try rows.next()) |row| {
+                defer zqlite_typed.freeStructFromRow(@TypeOf(row), arena, row);
+
+                const new_cursor = try (Db.queries.TimeToFixCursor{
+                    .fixed_at = row.fixed_at,
+                    .repo_id = row.repo_id,
+                    .app_id = row.app_id,
+                    .check_run_name = row.check_run_name,
+                    .cycle = row.cycle,
+                }).dupe(self.allocator);
+                errdefer new_cursor.deinit(self.allocator);
+
+                try metrics.pull_request_time_to_fix.observe(.{
+                    .app = row.app_slug,
+                    .repo = row.repo_full,
+                }, @intCast(row.broken_duration_seconds));
+
+                self.time_to_fix_cursor.deinit(self.allocator);
+
+                // Now that the old cursor is freed,
+                // no errors must happen until the new cursor is set,
+                // so that the new cursor will be freed.
+                errdefer comptime unreachable;
+
+                self.time_to_fix_cursor = new_cursor;
+            }
+
+            try rows.deinitErr();
+        }
+    }
+};
