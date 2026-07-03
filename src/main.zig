@@ -20,41 +20,52 @@ pub fn main(init: std.process.Init) !void {
         db: [:0]const u8 = defaults.db,
         @"user-agent": ?[]const u8 = defaults.@"user-agent",
         @"token-file": ?[]const u8 = defaults.@"token-file",
+        historical: ?bool = null,
+        @"metrics-listen": ?[]const u8 = defaults.@"metrics-listen",
 
         const defaults = .{
             .db = "github-checks-stats.sqlite",
             .@"user-agent" = null,
             .@"token-file" = null,
+            .@"metrics-listen" = null,
         };
 
         pub const meta = .{
-            .usage_summary = "[OPTION]... <scan|watch> [VERB_OPTION]... REPO...",
-            .full_text = "Collect statistics about GitHub Checks",
+            .usage_summary = "[OPTION]... <serve|scan|watch> [VERB_OPTION]... [REPO]...",
+            .full_text =
+            \\Collect statistics about GitHub Checks
+            \\
+            \\serve: Do not scan. Useful for serving metrics only.
+            \\scan:  Scan once and then exit.
+            \\watch: Scan in a loop.
+            ,
             .option_docs = .{
-                .db = "path to state database (" ++ defaults.db ++ ")",
+                .db = "path to state database (default: " ++ defaults.db ++ ")",
                 .@"user-agent" = "User-Agent header to send, may be needed to authenticate as a GitHub App",
                 .@"token-file" = "file to read a token from to authorize with",
+                .historical = "scan only closed instead of open PRs (default: true in scan mode, false otherwise)",
+                .@"metrics-listen" = "listen address and port or unix domain socket after `unix:` prefix to bind for metrics",
             },
         };
     };
 
     const Verbs = union(enum) {
+        serve: struct {
+            pub const meta = .{};
+        },
         scan: struct {
             pub const meta = .{};
         },
         watch: struct {
             interval: u32 = defaults.interval,
-            @"metrics-listen": ?[]const u8 = defaults.@"metrics-listen",
 
             const defaults = .{
                 .interval = std.time.s_per_hour,
-                .@"metrics-listen" = null,
             };
 
             pub const meta = .{
                 .option_docs = .{
-                    .interval = std.fmt.comptimePrint("seconds to sleep between iterations ({d})", .{defaults.interval}),
-                    .@"metrics-listen" = "listen address and port or unix domain socket after `unix:` prefix to bind for metrics",
+                    .interval = std.fmt.comptimePrint("seconds to sleep between iterations (default: {d})", .{defaults.interval}),
                 },
             };
         },
@@ -63,11 +74,36 @@ pub fn main(init: std.process.Init) !void {
     const options = options: {
         const result = args.parseWithVerbForCurrentProcess(Options, Verbs, init, .print);
 
-        const invalid = if (result) |options|
-            options.verb == null or options.positionals.len == 0
-        else |err| switch (err) {
+        const invalid = if (result) |options| invalid: {
+            if (options.verb == null) break :invalid true;
+
+            switch (options.verb.?) {
+                .serve => {
+                    if (options.options.@"metrics-listen" == null) {
+                        std.log.err("serve mode is pointless without --metrics-listen", .{});
+                        break :invalid true;
+                    }
+
+                    if (options.positionals.len != 0)
+                        std.log.warn("positional arguments are ignored in serve mode (received {d})", .{options.positionals.len});
+
+                    inline for (.{
+                        "user-agent",
+                        "token-file",
+                        "historical",
+                    }) |flag|
+                        if (@field(options.options, flag) != null)
+                            std.log.warn("--" ++ flag ++ " has no effect in serve mode", .{});
+                },
+                else => {
+                    if (options.positionals.len == 0) break :invalid true;
+                },
+            }
+
+            break :invalid false;
+        } else |err| switch (err) {
             error.InvalidArguments => true,
-            else => return err,
+            else => |e| return e,
         };
 
         if (invalid) {
@@ -87,6 +123,48 @@ pub fn main(init: std.process.Init) !void {
     const db_conn = try db.pool.acquire(init.io);
     defer db.pool.release(init.io, db_conn);
 
+    var metrics = if (options.options.@"metrics-listen" != null) try Metrics.init(init.gpa, init.io, .{
+        .prefix = "github_",
+    }) else null;
+    defer if (metrics) |*m| m.deinit();
+
+    var metrics_scrape = if (options.options.@"metrics-listen" != null) Metrics.Scrape{
+        .allocator = init.gpa,
+    } else null;
+    defer if (metrics_scrape) |*ms| ms.deinit();
+
+    var server = if (options.options.@"metrics-listen") |metrics_listen|
+        try httpz.Server(ServerContext).init(init.io, init.gpa, .{
+            .address = if (std.mem.cutPrefix(u8, metrics_listen, "unix:")) |socket_path|
+                .{ .unix = socket_path }
+            else
+                .{ .ip = try .parseLiteral(metrics_listen) },
+        }, .{
+            .io = init.io,
+            .metrics = &metrics.?,
+            .metrics_scrape = &metrics_scrape.?,
+            .db_pool = db.pool,
+        })
+    else
+        null;
+    defer if (server) |*s| s.deinit();
+
+    const server_thread = if (server) |*s| server_thread: {
+        var router = try s.router(.{});
+        router.get("/metrics", serveGetMetrics, .{});
+
+        break :server_thread try s.listenInNewThread();
+    } else null;
+    defer if (options.verb.? != .serve) if (server_thread) |st| {
+        server.?.stop();
+        st.join();
+    };
+
+    if (options.verb.? == .serve) {
+        server_thread.?.join();
+        return;
+    }
+
     var client = try api.Client.init(
         init.arena.allocator(),
         init.io,
@@ -101,12 +179,13 @@ pub fn main(init: std.process.Init) !void {
     defer client.deinit();
 
     switch (options.verb.?) {
+        .serve => unreachable,
         .scan => {
             var scan: Scan = .{
                 .client = &client,
                 .db_conn = db_conn,
                 .repos = options.positionals,
-                .historical = true,
+                .historical = options.options.historical orelse true,
             };
             while (true) {
                 scan.scan(init.gpa) catch |err| switch (err) {
@@ -122,47 +201,11 @@ pub fn main(init: std.process.Init) !void {
             }
         },
         .watch => |watch| {
-            var metrics = if (watch.@"metrics-listen" != null) try Metrics.init(init.gpa, init.io, .{
-                .prefix = "github_",
-            }) else null;
-            defer if (metrics) |*m| m.deinit();
-
-            var metrics_scrape = if (watch.@"metrics-listen" != null) Metrics.Scrape{
-                .allocator = init.gpa,
-            } else null;
-            defer if (metrics_scrape) |*ms| ms.deinit();
-
-            var server = if (watch.@"metrics-listen") |metrics_listen|
-                try httpz.Server(ServerContext).init(init.io, init.gpa, .{
-                    .address = if (std.mem.cutPrefix(u8, metrics_listen, "unix:")) |socket_path|
-                        .{ .unix = socket_path }
-                    else
-                        .{ .ip = try .parseLiteral(metrics_listen) },
-                }, .{
-                    .io = init.io,
-                    .metrics = &metrics.?,
-                    .metrics_scrape = &metrics_scrape.?,
-                    .db_pool = db.pool,
-                })
-            else
-                null;
-            defer if (server) |*s| {
-                s.stop();
-                s.deinit();
-            };
-
-            const server_thread = if (server) |*s| server_thread: {
-                var router = try s.router(.{});
-                router.get("/metrics", serveGetMetrics, .{});
-
-                break :server_thread try s.listenInNewThread();
-            } else null;
-
             var scan: Scan = .{
                 .client = &client,
                 .db_conn = db_conn,
                 .repos = options.positionals,
-                .historical = false,
+                .historical = options.options.historical orelse false,
             };
             const interval = std.Io.Duration.fromSeconds(@as(i64, watch.interval));
             while (true) {
@@ -178,8 +221,6 @@ pub fn main(init: std.process.Init) !void {
                 std.log.info("next scan in {f}", .{interval});
                 try std.Io.sleep(init.io, interval, .awake);
             }
-
-            if (server_thread) |st| st.join();
         },
     }
 }
