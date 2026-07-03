@@ -25,7 +25,7 @@ pub fn deinit(self: *@This()) void {
 pub fn init(
     allocator: std.mem.Allocator,
     io: std.Io,
-    environ_map: *std.process.Environ.Map,
+    environ_map: *const std.process.Environ.Map,
     user_agent: ?[]const u8,
     token: ?[]const u8,
 ) !@This() {

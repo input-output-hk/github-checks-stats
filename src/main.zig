@@ -18,16 +18,9 @@ pub fn main(init: std.process.Init) !void {
 
     const Options = struct {
         db: [:0]const u8 = defaults.db,
-        @"user-agent": ?[]const u8 = defaults.@"user-agent",
-        @"token-file": ?[]const u8 = defaults.@"token-file",
-        historical: ?bool = null,
-        @"metrics-listen": ?[]const u8 = defaults.@"metrics-listen",
 
         const defaults = .{
             .db = "github-checks-stats.sqlite",
-            .@"user-agent" = null,
-            .@"token-file" = null,
-            .@"metrics-listen" = null,
         };
 
         pub const meta = .{
@@ -35,28 +28,70 @@ pub fn main(init: std.process.Init) !void {
             .full_text =
             \\Collect statistics about GitHub Checks
             \\
-            \\serve: Do not scan. Useful for serving metrics only.
+            \\serve: Serve metrics, do not scan.
             \\scan:  Scan once and then exit.
             \\watch: Scan in a loop.
             ,
             .option_docs = .{
                 .db = "path to state database (default: " ++ defaults.db ++ ")",
-                .@"user-agent" = "User-Agent header to send, may be needed to authenticate as a GitHub App",
-                .@"token-file" = "file to read a token from to authorize with",
-                .historical = "scan only closed instead of open PRs (default: true in scan mode, false otherwise)",
-                .@"metrics-listen" = "listen address and port or unix domain socket after `unix:` prefix to bind for metrics",
+
+                .@"user-agent" = Common.meta.option_docs.@"user-agent",
+                .@"token-file" = Common.meta.option_docs.@"token-file",
+                .historical = Common.meta.option_docs.historical,
+                .@"metrics-listen" = Common.meta.option_docs.@"metrics-listen",
             },
+        };
+
+        const Common = struct {
+            @"user-agent": ?[]const u8 = @This().defaults.@"user-agent",
+            @"token-file": ?[]const u8 = @This().defaults.@"token-file",
+            historical: ?bool = @This().defaults.historical,
+            @"metrics-listen": ?[]const u8 = @This().defaults.@"metrics-listen",
+
+            pub const defaults = .{
+                .@"user-agent" = null,
+                .@"token-file" = null,
+                .historical = null,
+                .@"metrics-listen" = null,
+            };
+
+            pub const meta = .{
+                .option_docs = .{
+                    .@"user-agent" = "User-Agent header to send, may be needed to authenticate as a GitHub App",
+                    .@"token-file" = "file to read a token from to authorize with",
+                    .historical = "scan only closed instead of open PRs (default: true in scan mode, false otherwise)",
+                    .@"metrics-listen" = "listen address and port or unix domain socket after `unix:` prefix to bind for metrics",
+                },
+            };
         };
     };
 
     const Verbs = union(enum) {
         serve: struct {
-            pub const meta = .{};
+            @"metrics-listen": @FieldType(Options.Common, "metrics-listen") = Options.Common.defaults.@"metrics-listen",
+
+            pub const meta = .{
+                .option_docs = .{
+                    .@"metrics-listen" = Options.Common.meta.option_docs.@"metrics-listen" ++ " (required)",
+                },
+            };
         },
         scan: struct {
-            pub const meta = .{};
+            @"user-agent": @FieldType(Options.Common, "user-agent") = Options.Common.defaults.@"user-agent",
+            @"token-file": @FieldType(Options.Common, "token-file") = Options.Common.defaults.@"token-file",
+            historical: @FieldType(Options.Common, "historical") = Options.Common.defaults.historical,
+            @"metrics-listen": @FieldType(Options.Common, "metrics-listen") = Options.Common.defaults.@"metrics-listen",
+
+            pub const meta = .{
+                .option_docs = Options.Common.meta.option_docs,
+            };
         },
         watch: struct {
+            @"user-agent": @FieldType(Options.Common, "user-agent") = Options.Common.defaults.@"user-agent",
+            @"token-file": @FieldType(Options.Common, "token-file") = Options.Common.defaults.@"token-file",
+            historical: @FieldType(Options.Common, "historical") = Options.Common.defaults.historical,
+            @"metrics-listen": @FieldType(Options.Common, "metrics-listen") = Options.Common.defaults.@"metrics-listen",
+
             interval: u32 = defaults.interval,
 
             const defaults = .{
@@ -65,6 +100,11 @@ pub fn main(init: std.process.Init) !void {
 
             pub const meta = .{
                 .option_docs = .{
+                    .@"user-agent" = Options.Common.meta.option_docs.@"user-agent",
+                    .@"token-file" = Options.Common.meta.option_docs.@"token-file",
+                    .historical = Options.Common.meta.option_docs.historical,
+                    .@"metrics-listen" = Options.Common.meta.option_docs.@"metrics-listen",
+
                     .interval = std.fmt.comptimePrint("seconds to sleep between iterations (default: {d})", .{defaults.interval}),
                 },
             };
@@ -78,24 +118,18 @@ pub fn main(init: std.process.Init) !void {
             if (options.verb == null) break :invalid true;
 
             switch (options.verb.?) {
-                .serve => {
-                    if (options.options.@"metrics-listen" == null) {
-                        std.log.err("serve mode is pointless without --metrics-listen", .{});
+                .serve => |serve| {
+                    if (options.positionals.len != 0) {
+                        std.log.err("serve mode expects no positional arguments but received {d}", .{options.positionals.len});
                         break :invalid true;
                     }
 
-                    if (options.positionals.len != 0)
-                        std.log.warn("positional arguments are ignored in serve mode (received {d})", .{options.positionals.len});
-
-                    inline for (.{
-                        "user-agent",
-                        "token-file",
-                        "historical",
-                    }) |flag|
-                        if (@field(options.options, flag) != null)
-                            std.log.warn("--" ++ flag ++ " has no effect in serve mode", .{});
+                    if (serve.@"metrics-listen" == null) {
+                        std.log.err("--metrics-listen is required in serve mode", .{});
+                        break :invalid true;
+                    }
                 },
-                else => {
+                .scan, .watch => {
                     if (options.positionals.len == 0) break :invalid true;
                 },
             }
@@ -117,30 +151,121 @@ pub fn main(init: std.process.Init) !void {
     };
     defer options.deinit();
 
-    var db = try Db.init(init.gpa, init.io, .{ .path = options.options.db });
+    try start(init.gpa, init.io, init.environ_map, switch (options.verb.?) {
+        .serve => |serve| .{ .serve = .{
+            .db = options.options.db,
+            .metrics_listen = serve.@"metrics-listen".?,
+        } },
+        .scan => |scan| .{ .scan = .{
+            .db = options.options.db,
+            .user_agent = scan.@"user-agent",
+            .token_file = scan.@"token-file",
+            .historical = scan.historical orelse true,
+            .metrics_listen = scan.@"metrics-listen",
+            .repos = options.positionals,
+        } },
+        .watch => |watch| .{ .watch = .{
+            .db = options.options.db,
+            .user_agent = watch.@"user-agent",
+            .token_file = watch.@"token-file",
+            .historical = watch.historical orelse false,
+            .metrics_listen = watch.@"metrics-listen",
+            .repos = options.positionals,
+            .interval_s = watch.interval,
+        } },
+    });
+}
+
+pub const Config = union(enum) {
+    serve: Serve,
+    scan: @This().Scan,
+    watch: Watch,
+
+    pub const Serve = struct {
+        db: [:0]const u8 = "github-checks-stats.sqlite",
+        metrics_listen: []const u8,
+    };
+
+    pub const Scan = utils.meta.MergedStructs(&.{
+        utils.meta.SubStruct(Serve, std.enums.EnumSet(std.meta.FieldEnum(Serve)).initFull().differenceWith(.initMany(&.{
+            .metrics_listen,
+        }))),
+        struct {
+            user_agent: ?[]const u8 = null,
+            token_file: ?[]const u8 = null,
+            historical: bool,
+            metrics_listen: ?[]const u8 = null,
+            repos: []const []const u8,
+        },
+    });
+
+    pub const Watch = utils.meta.MergedStructs(&.{ @This().Scan, struct {
+        interval_s: u32 = std.time.s_per_hour,
+    } });
+};
+
+pub fn start(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    config: Config,
+) !void {
+    switch (config) {
+        inline else => |mode| std.log.info("database: {s}", .{mode.db}),
+    }
+    switch (config) {
+        .serve => {},
+        inline .scan, .watch => |mode| if (mode.user_agent) |user_agent| std.log.info("User-Agent: {s}", .{user_agent}),
+    }
+    switch (config) {
+        .serve => {},
+        inline .scan, .watch => |mode| if (mode.token_file) |token_file|
+            std.log.info("token file: {s}", .{token_file})
+        else
+            std.log.warn("no token file, likely to hit rate limit quickly", .{}),
+    }
+    switch (config) {
+        .serve => {},
+        inline .scan, .watch => |mode| std.log.info("historical: {any}", .{mode.historical}),
+    }
+    if (switch (config) {
+        .serve => |mode| mode.metrics_listen,
+        inline .scan, .watch => |mode| if (mode.metrics_listen) |addr| addr else null,
+    }) |addr|
+        std.log.info("serving metrics on {s}/metrics", .{addr});
+
+    var db = try Db.init(allocator, io, .{ .path = switch (config) {
+        inline else => |mode| mode.db,
+    } });
     defer db.deinit();
 
-    const db_conn = try db.pool.acquire(init.io);
-    defer db.pool.release(init.io, db_conn);
+    const db_conn = try db.pool.acquire(io);
+    defer db.pool.release(io, db_conn);
 
-    var metrics = if (options.options.@"metrics-listen" != null) try Metrics.init(init.gpa, init.io, .{
+    var metrics = if (switch (config) {
+        inline else => |mode| mode.metrics_listen,
+    } != null) try Metrics.init(allocator, io, .{
         .prefix = "github_",
     }) else null;
     defer if (metrics) |*m| m.deinit();
 
-    var metrics_scrape = if (options.options.@"metrics-listen" != null) Metrics.Scrape{
-        .allocator = init.gpa,
+    var metrics_scrape = if (switch (config) {
+        inline else => |mode| mode.metrics_listen,
+    } != null) Metrics.Scrape{
+        .allocator = allocator,
     } else null;
     defer if (metrics_scrape) |*ms| ms.deinit();
 
-    var server = if (options.options.@"metrics-listen") |metrics_listen|
-        try httpz.Server(ServerContext).init(init.io, init.gpa, .{
+    var server = if (switch (config) {
+        inline else => |mode| mode.metrics_listen,
+    }) |metrics_listen|
+        try httpz.Server(ServerContext).init(io, allocator, .{
             .address = if (std.mem.cutPrefix(u8, metrics_listen, "unix:")) |socket_path|
                 .{ .unix = socket_path }
             else
                 .{ .ip = try .parseLiteral(metrics_listen) },
         }, .{
-            .io = init.io,
+            .io = io,
             .metrics = &metrics.?,
             .metrics_scrape = &metrics_scrape.?,
             .db_pool = db.pool,
@@ -155,44 +280,56 @@ pub fn main(init: std.process.Init) !void {
 
         break :server_thread try s.listenInNewThread();
     } else null;
-    defer if (options.verb.? != .serve) if (server_thread) |st| {
+    defer if (config != .serve) if (server_thread) |st| {
         server.?.stop();
         st.join();
     };
 
-    if (options.verb.? == .serve) {
+    if (config == .serve) {
         server_thread.?.join();
         return;
     }
 
     var client = try api.Client.init(
-        init.arena.allocator(),
-        init.io,
-        init.environ_map,
-        options.options.@"user-agent",
-        if (options.options.@"token-file") |token_file| token: {
+        allocator,
+        io,
+        environ_map,
+        switch (config) {
+            .serve => unreachable,
+            inline else => |mode| mode.user_agent,
+        },
+        if (switch (config) {
+            .serve => unreachable,
+            inline else => |mode| mode.token_file,
+        }) |token_file| token: {
             var buffer: [1024]u8 = undefined;
-            const token = try std.Io.Dir.cwd().readFile(init.io, token_file, &buffer);
+            const token = try std.Io.Dir.cwd().readFile(io, token_file, &buffer);
             break :token std.mem.trim(u8, token, " \t\n\r");
         } else null,
     );
     defer client.deinit();
 
-    switch (options.verb.?) {
+    switch (config) {
         .serve => unreachable,
         .scan => {
             var scan: Scan = .{
                 .client = &client,
                 .db_conn = db_conn,
-                .repos = options.positionals,
-                .historical = options.options.historical orelse true,
+                .repos = switch (config) {
+                    .serve => unreachable,
+                    inline .scan, .watch => |mode| mode.repos,
+                },
+                .historical = switch (config) {
+                    .serve => unreachable,
+                    inline else => |mode| mode.historical,
+                },
             };
             while (true) {
-                scan.scan(init.gpa) catch |err| switch (err) {
+                scan.scan(allocator) catch |err| switch (err) {
                     error.RateLimited => {
-                        const duration = std.Io.Timestamp.now(init.io, .real).durationTo(client.rate_limit_reset.?);
+                        const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
                         std.log.warn("rate limited; continuing in {f}", .{duration});
-                        try std.Io.sleep(init.io, duration, .real);
+                        try std.Io.sleep(io, duration, .real);
                         continue;
                     },
                     else => |e| return e,
@@ -204,22 +341,28 @@ pub fn main(init: std.process.Init) !void {
             var scan: Scan = .{
                 .client = &client,
                 .db_conn = db_conn,
-                .repos = options.positionals,
-                .historical = options.options.historical orelse false,
+                .repos = switch (config) {
+                    .serve => unreachable,
+                    inline .scan, .watch => |mode| mode.repos,
+                },
+                .historical = switch (config) {
+                    .serve => unreachable,
+                    inline else => |mode| mode.historical,
+                },
             };
-            const interval = std.Io.Duration.fromSeconds(@as(i64, watch.interval));
+            const interval = std.Io.Duration.fromSeconds(watch.interval_s);
             while (true) {
-                scan.scan(init.gpa) catch |err| switch (err) {
+                scan.scan(allocator) catch |err| switch (err) {
                     error.RateLimited => {
-                        const duration = std.Io.Timestamp.now(init.io, .real).durationTo(client.rate_limit_reset.?);
+                        const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
                         std.log.warn("rate limited; continuing in {f}", .{duration});
-                        try std.Io.sleep(init.io, duration, .real);
+                        try std.Io.sleep(io, duration, .real);
                         continue;
                     },
                     else => |e| return e,
                 };
                 std.log.info("next scan in {f}", .{interval});
-                try std.Io.sleep(init.io, interval, .awake);
+                try std.Io.sleep(io, interval, .awake);
             }
         },
     }
