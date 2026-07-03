@@ -127,6 +127,11 @@ pub fn main(init: std.process.Init) !void {
             }) else null;
             defer if (metrics) |*m| m.deinit();
 
+            var metrics_scrape = if (watch.@"metrics-listen" != null) Metrics.Scrape{
+                .allocator = init.gpa,
+            } else null;
+            defer if (metrics_scrape) |*ms| ms.deinit();
+
             var server = if (watch.@"metrics-listen") |metrics_listen|
                 try httpz.Server(ServerContext).init(init.io, init.gpa, .{
                     .address = if (std.mem.cutPrefix(u8, metrics_listen, "unix:")) |socket_path|
@@ -136,6 +141,7 @@ pub fn main(init: std.process.Init) !void {
                 }, .{
                     .io = init.io,
                     .metrics = &metrics.?,
+                    .metrics_scrape = &metrics_scrape.?,
                     .db_pool = db.pool,
                 })
             else
@@ -380,57 +386,10 @@ const Scan = struct {
     }
 };
 
-fn refreshMetrics(allocator: std.mem.Allocator, metrics: *Metrics, db_conn: zqlite.Conn) !void {
-    {
-        var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(allocator, db_conn, .{});
-        errdefer rows.deinit();
-
-        while (try rows.next()) |row| {
-            defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
-            try metrics.pull_requests.set(.{
-                .repo = row.repo,
-                .state = std.meta.stringToEnum(api.types.PullRequestState, row.state).?,
-            }, @intCast(row.count));
-        }
-
-        try rows.deinitErr();
-    }
-
-    {
-        var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{});
-        errdefer rows.deinit();
-
-        while (try rows.next()) |row| {
-            defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
-            try metrics.check_runs.set(.{
-                .app = row.app_slug,
-                .repo = row.repo,
-                .state = std.meta.stringToEnum(Metrics.CheckState, row.state).?,
-            }, @intCast(row.count));
-        }
-
-        try rows.deinitErr();
-    }
-
-    {
-        var rows = try Db.queries.timeToFix.queryIterator(allocator, db_conn, .{});
-        errdefer rows.deinit();
-
-        while (try rows.next()) |row| {
-            defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
-            try metrics.pull_request_time_to_fix.observe(.{
-                .app = row.app_slug,
-                .repo = row.repo,
-            }, @intCast(row.time_to_fix_seconds));
-        }
-
-        try rows.deinitErr();
-    }
-}
-
 const ServerContext = struct {
     io: std.Io,
     metrics: *Metrics,
+    metrics_scrape: *Metrics.Scrape,
     db_pool: *zqlite.Pool,
 };
 
@@ -438,7 +397,7 @@ fn serveGetMetrics(ctx: ServerContext, req: *httpz.Request, res: *httpz.Response
     const db_conn = try ctx.db_pool.acquire(ctx.io);
     defer ctx.db_pool.release(ctx.io, db_conn);
 
-    try refreshMetrics(req.arena, ctx.metrics, db_conn);
+    try ctx.metrics_scrape.refreshMetrics(req.arena, ctx.io, ctx.metrics, db_conn);
 
     res.content_type = .TEXT;
     try ctx.metrics.write(res.writer());
