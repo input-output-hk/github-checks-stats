@@ -227,7 +227,7 @@ const Scan = struct {
                 var prs_db_open = try Db.queries.PullRequest.SelectByRepoAndStates(
                     &.{.id},
                     &.{.OPEN},
-                ).queryIterator(allocator, self.db_conn, .{
+                ).queryIterator(self.db_conn, .{
                     repo.value.owner.login,
                     repo.value.name,
                 });
@@ -239,7 +239,7 @@ const Scan = struct {
                     prs_closed_ids.deinit(allocator);
                 }
 
-                while (try prs_db_open.next()) |pr_db_open| {
+                while (try prs_db_open.next(allocator)) |pr_db_open| {
                     defer zqlite_typed.freeStructFromRow(@TypeOf(pr_db_open), allocator, pr_db_open);
 
                     // XXX It would be nicer if we could exclude

@@ -86,10 +86,10 @@ pub const Scrape = struct {
         defer self.mutex.unlock(io);
 
         {
-            var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(arena, db_conn, .{});
+            var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(db_conn, .{});
             errdefer rows.deinit();
 
-            while (try rows.next()) |row| {
+            while (try rows.next(arena)) |row| {
                 defer zqlite_typed.freeStructFromRow(@TypeOf(row), arena, row);
                 try metrics.pull_requests.set(.{
                     .repo = row.repo,
@@ -101,10 +101,10 @@ pub const Scrape = struct {
         }
 
         {
-            var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(arena, db_conn, .{});
+            var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(db_conn, .{});
             errdefer rows.deinit();
 
-            while (try rows.next()) |row| {
+            while (try rows.next(arena)) |row| {
                 defer zqlite_typed.freeStructFromRow(@TypeOf(row), arena, row);
                 try metrics.check_runs.set(.{
                     .app = row.app_slug,
@@ -117,10 +117,10 @@ pub const Scrape = struct {
         }
 
         {
-            var rows = try Db.queries.timeToFix.queryIterator(arena, db_conn, self.time_to_fix_cursor.tuple());
+            var rows = try Db.queries.timeToFix.queryIterator(db_conn, self.time_to_fix_cursor.tuple());
             errdefer rows.deinit();
 
-            while (try rows.next()) |row| {
+            while (try rows.next(arena)) |row| {
                 defer zqlite_typed.freeStructFromRow(@TypeOf(row), arena, row);
 
                 const new_cursor = try (Db.queries.TimeToFixCursor{
