@@ -313,6 +313,7 @@ pub fn start(
         .serve => unreachable,
         .scan => {
             var scan: Scan = .{
+                .allocator = allocator,
                 .client = &client,
                 .db_conn = db_conn,
                 .repos = switch (config) {
@@ -324,8 +325,9 @@ pub fn start(
                     inline else => |mode| mode.historical,
                 },
             };
+            defer scan.deinit();
             while (true) {
-                scan.scan(allocator) catch |err| switch (err) {
+                scan.scan() catch |err| switch (err) {
                     error.RateLimited => {
                         const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
                         std.log.warn("rate limited; continuing in {f}", .{duration});
@@ -339,6 +341,7 @@ pub fn start(
         },
         .watch => |watch| {
             var scan: Scan = .{
+                .allocator = allocator,
                 .client = &client,
                 .db_conn = db_conn,
                 .repos = switch (config) {
@@ -350,9 +353,10 @@ pub fn start(
                     inline else => |mode| mode.historical,
                 },
             };
+            defer scan.deinit();
             const interval = std.Io.Duration.fromSeconds(watch.interval_s);
             while (true) {
-                scan.scan(allocator) catch |err| switch (err) {
+                scan.scan() catch |err| switch (err) {
                     error.RateLimited => {
                         const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
                         std.log.warn("rate limited; continuing in {f}", .{duration});
@@ -368,20 +372,94 @@ pub fn start(
     }
 }
 
+/// Stateful scan that can continue where it left off.
 const Scan = struct {
+    allocator: std.mem.Allocator,
     client: *api.Client,
     db_conn: zqlite.Conn,
     repos: []const []const u8,
     historical: bool,
 
-    repo_idx: usize = 0,
+    repos_idx: usize = 0,
     prss_idx: usize = 0,
-    prs_idx: usize = 0,
-    commits_idx: usize = 0,
-    check_suites_idx: usize = 0,
 
-    pub fn scan(self: *@This(), allocator: std.mem.Allocator) !void {
-        for (self.repos[self.repo_idx..]) |repo_full| {
+    /// IDs of the last item at each level that was processed to completion.
+    ///
+    /// GitHub GraphQL doesn't guarantee stable cursors, and numeric list
+    /// positions can shift between calls (items closing, force-pushes, new
+    /// items appended in the middle of a list). Anchoring by ID makes resume
+    /// robust: if the anchored item is still there we resume right after it;
+    /// if it has vanished, we log a warning and restart the level.
+    anchor: struct {
+        pr: ?api.types.Id = null,
+        commit: ?api.types.Id = null,
+        check_suite: ?api.types.Id = null,
+
+        inline fn allocator(self: *const @This()) std.mem.Allocator {
+            return @as(*const Scan, @fieldParentPtr("anchor", self)).allocator;
+        }
+
+        pub fn deinit(self: *const @This()) void {
+            inline for (comptime std.meta.fieldNames(@This())) |field|
+                if (@field(self, field)) |id| self.allocator().free(id);
+        }
+
+        pub fn set(
+            self: *@This(),
+            comptime anchor: std.meta.FieldEnum(@This()),
+            value: api.types.Id,
+        ) !void {
+            const new = try self.allocator().dupe(u8, value);
+            if (@field(self, @tagName(anchor))) |old| self.allocator().free(old);
+            @field(self, @tagName(anchor)) = new;
+        }
+
+        pub fn clear(
+            self: *@This(),
+            comptime anchor: std.meta.FieldEnum(@This()),
+        ) void {
+            if (@field(self, @tagName(anchor))) |old| self.allocator().free(old);
+            @field(self, @tagName(anchor)) = null;
+        }
+
+        pub fn find(
+            self: @This(),
+            comptime anchor: std.meta.FieldEnum(@This()),
+            /// An API type. Must have an `id` field.
+            comptime Node: type,
+            nodes: []const Node,
+        ) ?usize {
+            if (@field(self, @tagName(anchor))) |value|
+                for (nodes, 0..) |node, idx| {
+                    if (std.mem.eql(u8, node.id, value)) return idx;
+                };
+            return null;
+        }
+
+        /// Returns the next index to process.
+        /// If the anchor is not found returns zero and logs a warning.
+        pub fn findNextLogVanished(
+            self: @This(),
+            comptime anchor: std.meta.FieldEnum(@This()),
+            comptime Node: type,
+            nodes: []const Node,
+        ) usize {
+            if (self.find(anchor, Node, nodes)) |idx|
+                return idx + 1;
+
+            if (@field(self, @tagName(anchor))) |value|
+                std.log.warn(@tagName(anchor) ++ " anchor \"{s}\" not found, restarting from the beginning", .{value});
+
+            return 0;
+        }
+    } = .{},
+
+    pub fn deinit(self: @This()) void {
+        self.anchor.deinit();
+    }
+
+    pub fn scan(self: *@This()) !void {
+        for (self.repos[self.repos_idx..], self.repos_idx..) |repo_full, repos_idx| {
             const repo_owner, const repo_name = repo: {
                 errdefer std.log.err("malformed repository \"{s}\", must be of form \"foo/bar\"", .{repo_full});
                 var iter = std.mem.splitScalar(u8, repo_full, '/');
@@ -393,14 +471,14 @@ const Scan = struct {
 
             std.log.info("/{s}/{s}: fetching repository…", .{ repo_owner, repo_name });
 
-            const repo = try api.queries.fetchRepoByFullName(allocator, self.client, repo_owner, repo_name);
+            const repo = try api.queries.fetchRepoByFullName(self.allocator, self.client, repo_owner, repo_name);
             defer repo.deinit();
 
             try Db.queries.Repository.upsert.exec(self.db_conn, .{ repo.value.id, repo.value.owner.login, repo.value.name });
 
             std.log.info("/{s}/{s}: scanning for pull requests…", .{ repo_owner, repo_name });
 
-            const prs_open = try api.queries.fetchPullRequestsByRepo(allocator, self.client, repo.value.owner.login, repo.value.name, if (self.historical) null else &.{.OPEN});
+            const prs_open = try api.queries.fetchPullRequestsByRepo(self.allocator, self.client, repo.value.owner.login, repo.value.name, if (self.historical) null else &.{.OPEN});
             defer prs_open.deinit();
 
             // Some PRs could have been closed since we last fetched
@@ -419,12 +497,12 @@ const Scan = struct {
 
                 var prs_closed_ids = std.ArrayList(api.types.Id).empty;
                 defer {
-                    for (prs_closed_ids.items) |id| allocator.free(id);
-                    prs_closed_ids.deinit(allocator);
+                    for (prs_closed_ids.items) |id| self.allocator.free(id);
+                    prs_closed_ids.deinit(self.allocator);
                 }
 
-                while (try prs_db_open.next(allocator)) |pr_db_open| {
-                    defer zqlite_typed.freeStructFromRow(@TypeOf(pr_db_open), allocator, pr_db_open);
+                while (try prs_db_open.next(self.allocator)) |pr_db_open| {
+                    defer zqlite_typed.freeStructFromRow(@TypeOf(pr_db_open), self.allocator, pr_db_open);
 
                     // XXX It would be nicer if we could exclude
                     // the open PRs that we just fetched from the API
@@ -436,16 +514,16 @@ const Scan = struct {
                         if (std.mem.eql(u8, pr_open.id, pr_db_open.id))
                             break; // PR is still open.
                     } else {
-                        const id = try allocator.dupe(u8, pr_db_open.id);
-                        errdefer allocator.free(id);
+                        const id = try self.allocator.dupe(u8, pr_db_open.id);
+                        errdefer self.allocator.free(id);
 
-                        try prs_closed_ids.append(allocator, id);
+                        try prs_closed_ids.append(self.allocator, id);
                     }
                 }
 
                 try prs_db_open.deinitErr();
 
-                break :prs_closed try api.queries.fetchPullRequestsByIds(allocator, self.client, prs_closed_ids.items);
+                break :prs_closed try api.queries.fetchPullRequestsByIds(self.allocator, self.client, prs_closed_ids.items);
             } else null;
             defer if (prs_closed) |pr| pr.deinit();
 
@@ -454,9 +532,11 @@ const Scan = struct {
                 if (prs_closed) |pr| pr.value else &.{},
             };
 
-            for (prss[self.prss_idx..], self.prss_idx..) |prs, prss_idx|
-                for (prs[(if (prss_idx == self.prss_idx) self.prs_idx else 0)..]) |pr|
+            for (prss[self.prss_idx..]) |prs| {
+                const prs_start_idx = if (self.anchor.find(.pr, api.types.PullRequest, prs)) |idx| idx + 1 else 0;
+                for (prs[prs_start_idx..]) |pr|
                     try Db.queries.PullRequest.upsert.exec(self.db_conn, .{ pr.id, repo.value.id, pr.number, @tagName(pr.state) });
+            }
 
             const prs_count = prs_count: {
                 var count: usize = 0;
@@ -464,6 +544,7 @@ const Scan = struct {
                     count += prs.len;
                 break :prs_count count;
             };
+
             for (prss[self.prss_idx..], self.prss_idx..) |prs, prss_idx| {
                 const prev_prs_count = prev_prs_count: {
                     var count: usize = 0;
@@ -471,22 +552,27 @@ const Scan = struct {
                         count += prss[i].len;
                     break :prev_prs_count count;
                 };
-                for (prs[self.prs_idx..]) |pr| {
+
+                const prs_start_idx = self.anchor.findNextLogVanished(.pr, api.types.PullRequest, prs);
+                for (prs[prs_start_idx..], prs_start_idx..) |pr, prs_idx| {
                     std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
 
-                    const commits = try api.queries.fetchCommitsByPullRequestId(allocator, self.client, pr.id);
+                    const commits = try api.queries.fetchCommitsByPullRequestId(self.allocator, self.client, pr.id);
                     defer commits.deinit();
 
-                    for (commits.value[self.commits_idx..]) |commit|
+                    const commits_start_idx = self.anchor.findNextLogVanished(.commit, api.types.Commit, commits.value);
+
+                    for (commits.value[commits_start_idx..]) |commit|
                         try Db.queries.Commit.upsert.exec(self.db_conn, .{ commit.id, commit.oid });
 
-                    for (commits.value[self.commits_idx..]) |commit| {
+                    for (commits.value[commits_start_idx..], commits_start_idx..) |commit, commits_idx| {
                         std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
 
-                        const check_suites = try api.queries.fetchCheckSuitesByCommitId(allocator, self.client, commit.id);
+                        const check_suites = try api.queries.fetchCheckSuitesByCommitId(self.allocator, self.client, commit.id);
                         defer check_suites.deinit();
 
-                        for (check_suites.value[self.check_suites_idx..]) |check_suite| {
+                        const check_suites_start_idx = self.anchor.findNextLogVanished(.check_suite, api.types.CheckSuite, check_suites.value);
+                        for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
                             try Db.queries.App.upsert.exec(self.db_conn, .{
                                 check_suite.app.id,
                                 check_suite.app.slug,
@@ -494,11 +580,11 @@ const Scan = struct {
                             });
 
                             {
-                                const created_at = try std.fmt.allocPrint(allocator, "{f}", .{check_suite.createdAt});
-                                defer allocator.free(created_at);
+                                const created_at = try std.fmt.allocPrint(self.allocator, "{f}", .{check_suite.createdAt});
+                                defer self.allocator.free(created_at);
 
-                                const status = try std.fmt.allocPrint(allocator, "{f}", .{check_suite.status});
-                                defer allocator.free(status);
+                                const status = try std.fmt.allocPrint(self.allocator, "{f}", .{check_suite.status});
+                                defer self.allocator.free(status);
 
                                 try Db.queries.CheckSuite.upsert.exec(self.db_conn, .{
                                     check_suite.id,
@@ -513,15 +599,15 @@ const Scan = struct {
 
                             std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
 
-                            const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(allocator, self.client, check_suite.id);
+                            const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(self.allocator, self.client, check_suite.id);
                             defer check_runs.deinit();
 
                             for (check_runs.value) |check_run| {
-                                const started_at = try std.fmt.allocPrint(allocator, "{f}", .{check_run.startedAt});
-                                defer allocator.free(started_at);
+                                const started_at = try std.fmt.allocPrint(self.allocator, "{f}", .{check_run.startedAt});
+                                defer self.allocator.free(started_at);
 
-                                const completed_at = if (check_run.completedAt) |c| try std.fmt.allocPrint(allocator, "{f}", .{c}) else null;
-                                defer if (completed_at) |c| allocator.free(c);
+                                const completed_at = if (check_run.completedAt) |c| try std.fmt.allocPrint(self.allocator, "{f}", .{c}) else null;
+                                defer if (completed_at) |c| self.allocator.free(c);
 
                                 try Db.queries.CheckRun.upsert.exec(self.db_conn, .{
                                     check_run.id,
@@ -549,24 +635,24 @@ const Scan = struct {
                                 std.log.info("{s}: {d}/{d} check runs scanned", .{ check_suite.resourcePath, check_runs_idx + 1, check_runs.value.len });
                             }
 
-                            self.check_suites_idx += 1;
-                            std.log.info("{s}: {d}/{d} check suites scanned", .{ commit.resourcePath, self.check_suites_idx, check_suites.value.len });
-                        } else self.check_suites_idx = 0;
+                            try self.anchor.set(.check_suite, check_suite.id);
+                            std.log.info("{s}: {d}/{d} check suites scanned", .{ commit.resourcePath, check_suites_idx + 1, check_suites.value.len });
+                        } else self.anchor.clear(.check_suite);
 
-                        self.commits_idx += 1;
-                        std.log.info("{s}: {d}/{d} commits scanned", .{ pr.resourcePath, self.commits_idx, commits.value.len });
-                    } else self.commits_idx = 0;
+                        try self.anchor.set(.commit, commit.id);
+                        std.log.info("{s}: {d}/{d} commits scanned", .{ pr.resourcePath, commits_idx + 1, commits.value.len });
+                    } else self.anchor.clear(.commit);
 
-                    self.prs_idx += 1;
-                    std.log.info("/{s}/{s}: {d}/{d} PRs scanned", .{ repo_owner, repo_name, prev_prs_count + self.prs_idx, prs_count });
-                } else self.prs_idx = 0;
+                    try self.anchor.set(.pr, pr.id);
+                    std.log.info("/{s}/{s}: {d}/{d} PRs scanned", .{ repo_owner, repo_name, prev_prs_count + prs_idx + 1, prs_count });
+                } else self.anchor.clear(.pr);
 
                 self.prss_idx += 1;
             } else self.prss_idx = 0;
 
-            self.repo_idx += 1;
-            std.log.info("{d}/{d} repositories scanned", .{ self.repo_idx, self.repos.len });
-        } else self.repo_idx = 0;
+            self.repos_idx += 1;
+            std.log.info("{d}/{d} repositories scanned", .{ repos_idx + 1, self.repos.len });
+        } else self.repos_idx = 0;
     }
 };
 
