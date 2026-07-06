@@ -367,84 +367,73 @@ const Scan = struct {
     repos: []const []const u8,
     historical: bool,
 
-    repos_idx: usize = 0,
-    prss_idx: usize = 0,
+    progress: Progress = .{},
 
-    anchor: Anchor = .{},
+    const Progress = struct {
+        repos_idx: usize = 0,
+        prss_idx: usize = 0,
+        pr: Anchor = .{},
+        commit: Anchor = .{},
+        check_suite: Anchor = .{},
 
-    /// IDs of the last item at each level that was processed to completion.
-    ///
-    /// GitHub GraphQL doesn't guarantee stable cursors, and numeric list
-    /// positions can shift between calls (items closing, force-pushes, new
-    /// items appended in the middle of a list). Anchoring by ID makes resume
-    /// robust: if the anchored item is still there we resume right after it;
-    /// if it has vanished, we log a warning and restart the level.
-    const Anchor = struct {
-        pr: ?api.types.Id = null,
-        commit: ?api.types.Id = null,
-        check_suite: ?api.types.Id = null,
-
-        inline fn allocator(self: *const @This()) std.mem.Allocator {
-            return @as(*const Scan, @fieldParentPtr("anchor", self)).allocator;
+        pub fn deinit(self: *const @This(), allocator: std.mem.Allocator) void {
+            inline for (.{ "pr", "commit", "check_suite" }) |anchor|
+                @field(self, anchor).deinit(allocator);
         }
 
-        pub fn deinit(self: *const @This()) void {
-            inline for (comptime std.meta.fieldNames(@This())) |field|
-                if (@field(self, field)) |id| self.allocator().free(id);
-        }
+        /// ID of the last item at each level that was processed to completion.
+        ///
+        /// GitHub GraphQL doesn't guarantee stable cursors, and numeric list
+        /// positions can shift between calls (items closing, force-pushes, new
+        /// items appended in the middle of a list). Anchoring by ID makes resume
+        /// robust: if the anchored item is still there we resume right after it;
+        /// if it has vanished, we log a warning and restart the level.
+        pub const Anchor = struct {
+            id: ?api.types.Id = null,
 
-        pub fn set(
-            self: *@This(),
-            comptime anchor: std.meta.FieldEnum(@This()),
-            value: api.types.Id,
-        ) !void {
-            const new = try self.allocator().dupe(u8, value);
-            if (@field(self, @tagName(anchor))) |old| self.allocator().free(old);
-            @field(self, @tagName(anchor)) = new;
-        }
+            pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+                if (self.id) |id| allocator.free(id);
+            }
 
-        pub fn clear(
-            self: *@This(),
-            comptime anchor: std.meta.FieldEnum(@This()),
-        ) void {
-            if (@field(self, @tagName(anchor))) |old| self.allocator().free(old);
-            @field(self, @tagName(anchor)) = null;
-        }
+            pub fn set(self: *@This(), allocator: std.mem.Allocator, value: api.types.Id) !void {
+                const new = try allocator.dupe(u8, value);
+                if (self.id) |old| allocator.free(old);
+                self.id = new;
+            }
 
-        pub fn find(
-            self: @This(),
-            comptime anchor: std.meta.FieldEnum(@This()),
-            /// An API type. Must have an `id` field.
-            comptime Node: type,
-            nodes: []const Node,
-        ) ?usize {
-            if (@field(self, @tagName(anchor))) |value|
-                for (nodes, 0..) |node, idx| {
-                    if (std.mem.eql(u8, node.id, value)) return idx;
-                };
-            return null;
-        }
+            pub fn clear(self: *@This(), allocator: std.mem.Allocator) void {
+                if (self.id) |old| allocator.free(old);
+                self.id = null;
+            }
 
-        /// Returns the next index to process.
-        /// If the anchor is not found returns zero and logs a warning.
-        pub fn findNextLogVanished(
-            self: @This(),
-            comptime anchor: std.meta.FieldEnum(@This()),
-            comptime Node: type,
-            nodes: []const Node,
-        ) usize {
-            if (self.find(anchor, Node, nodes)) |idx|
-                return idx + 1;
+            pub fn find(
+                self: @This(),
+                /// An API type. Must have an `id` field.
+                comptime Node: type,
+                nodes: []const Node,
+            ) ?usize {
+                if (self.id) |id|
+                    for (nodes, 0..) |node, idx|
+                        if (std.mem.eql(u8, node.id, id)) return idx;
+                return null;
+            }
 
-            if (@field(self, @tagName(anchor))) |value|
-                std.log.warn(@tagName(anchor) ++ " anchor \"{s}\" not found, restarting from the beginning", .{value});
+            /// Returns the next index to process.
+            /// If the anchor is not found returns zero and logs a warning.
+            pub fn findNextLogVanished(self: @This(), comptime Node: type, nodes: []const Node) usize {
+                if (self.find(Node, nodes)) |idx|
+                    return idx + 1;
 
-            return 0;
-        }
+                if (self.id) |id|
+                    std.log.warn(@typeName(Node) ++ " anchor {s} not found, restarting from the beginning", .{id});
+
+                return 0;
+            }
+        };
     };
 
     pub fn deinit(self: @This()) void {
-        self.anchor.deinit();
+        self.progress.deinit(self.allocator);
     }
 
     pub fn loadFromDb(self: *@This()) !void {
@@ -461,51 +450,36 @@ const Scan = struct {
             db_repos,
             self.historical,
         })) |db_scan| {
+            self.progress.repos_idx = @intCast(db_scan.repos_idx);
+            self.progress.prss_idx = @intCast(db_scan.prss_idx);
+
             // Couldn't help myself, had to prematurely optimize this to prevent allocations.
             const optimized = true;
 
             defer if (optimized) {
                 // Do not free `db_scan` because we move ownership of its allocated fields into `scan`.
             } else zqlite_typed.freeStructFromRow(@TypeOf(db_scan), self.allocator, db_scan);
-            self.repos_idx = @intCast(db_scan.repos_idx);
-            self.prss_idx = @intCast(db_scan.prss_idx);
 
-            inline for (comptime std.meta.fieldNames(Scan.Anchor)) |field|
-                std.debug.assert(@field(self.anchor, field) == null);
+            inline for (.{ "pr", "commit", "check_suite" }) |field| {
+                const anchor = &@field(self.progress, field);
+                // The DB schema and Zig field names are meant to stay in sync.
+                const db_anchor = @field(db_scan, field);
 
-            if (optimized)
-                self.anchor.pr = db_scan.pr
-            else if (db_scan.pr) |pr|
-                try self.anchor.set(.pr, pr);
-
-            if (optimized)
-                self.anchor.commit = db_scan.commit
-            else if (db_scan.pr) |commit|
-                try self.anchor.set(.pr, commit);
-
-            if (optimized)
-                self.anchor.check_suite = db_scan.check_suite
-            else if (db_scan.pr) |check_suite|
-                try self.anchor.set(.pr, check_suite);
-
-            if (optimized) inline for (comptime std.meta.fieldNames(Scan.Anchor)) |field| {
-                // Unnecessary as this would be caught be the compiler anyway,
-                // but meant to express that the DB schema and Zig fields need to stay in sync.
-                comptime std.debug.assert(@hasField(@TypeOf(db_scan), field));
-
-                const db_value: ?api.types.Id = @field(db_scan, field);
-                if (@field(self.anchor, field)) |scan_anchor|
-                    std.debug.assert(scan_anchor.ptr == db_value.?.ptr)
+                if (optimized)
+                    anchor.id = db_anchor
+                else if (db_anchor) |db_a|
+                    try anchor.set(self.allocator, db_a)
                 else
-                    std.debug.assert(db_value == null);
-            };
+                    anchor.clear(self.allocator);
+            }
 
-            std.log.info("found interrupted scan in the database, continuing at {d}:{d}:{?s}:{?s}:{?s}", .{
-                self.repos_idx,
-                self.prss_idx,
-                self.anchor.pr,
-                self.anchor.commit,
-                self.anchor.check_suite,
+            std.log.info("continuing interrupted scan at repo={d}/{d} prs_batch={d} pr={?s} commit={?s} check_suite={?s}", .{
+                self.progress.repos_idx + 1,
+                self.repos.len,
+                self.progress.prss_idx + 1,
+                self.progress.pr.id,
+                self.progress.commit.id,
+                self.progress.check_suite.id,
             });
         }
     }
@@ -514,11 +488,11 @@ const Scan = struct {
         const db_repos = try Db.queries.Scan.encodeRepos(self.allocator, self.repos);
         defer self.allocator.free(db_repos);
 
-        if (self.repos_idx == 0 and
-            self.prss_idx == 0 and
-            self.anchor.pr == null and
-            self.anchor.commit == null and
-            self.anchor.check_suite == null)
+        if (self.progress.repos_idx == 0 and
+            self.progress.prss_idx == 0 and
+            self.progress.pr.id == null and
+            self.progress.commit.id == null and
+            self.progress.check_suite.id == null)
             try Db.queries.Scan.delete.exec(self.db_conn, .{
                 db_repos,
                 self.historical,
@@ -527,16 +501,16 @@ const Scan = struct {
             try Db.queries.Scan.upsert.exec(self.db_conn, .{
                 db_repos,
                 self.historical,
-                @intCast(self.repos_idx),
-                @intCast(self.prss_idx),
-                self.anchor.pr,
-                self.anchor.commit,
-                self.anchor.check_suite,
+                @intCast(self.progress.repos_idx),
+                @intCast(self.progress.prss_idx),
+                self.progress.pr.id,
+                self.progress.commit.id,
+                self.progress.check_suite.id,
             });
     }
 
     pub fn scan(self: *@This()) !void {
-        for (self.repos[self.repos_idx..], self.repos_idx..) |repo_full, repos_idx| {
+        for (self.repos[self.progress.repos_idx..], self.progress.repos_idx..) |repo_full, repos_idx| {
             const repo_owner, const repo_name = repo: {
                 errdefer std.log.err("malformed repository \"{s}\", must be of form \"foo/bar\"", .{repo_full});
                 var iter = std.mem.splitScalar(u8, repo_full, '/');
@@ -609,8 +583,8 @@ const Scan = struct {
                 if (prs_closed) |pr| pr.value else &.{},
             };
 
-            for (prss[self.prss_idx..]) |prs| {
-                const prs_start_idx = if (self.anchor.find(.pr, api.types.PullRequest, prs)) |idx| idx + 1 else 0;
+            for (prss[self.progress.prss_idx..]) |prs| {
+                const prs_start_idx = if (self.progress.pr.find(api.types.PullRequest, prs)) |idx| idx + 1 else 0;
                 for (prs[prs_start_idx..]) |pr|
                     try Db.queries.PullRequest.upsert.exec(self.db_conn, .{ pr.id, repo.value.id, pr.number, @tagName(pr.state) });
             }
@@ -622,7 +596,7 @@ const Scan = struct {
                 break :prs_count count;
             };
 
-            for (prss[self.prss_idx..], self.prss_idx..) |prs, prss_idx| {
+            for (prss[self.progress.prss_idx..], self.progress.prss_idx..) |prs, prss_idx| {
                 const prev_prs_count = prev_prs_count: {
                     var count: usize = 0;
                     for (0..prss_idx) |i|
@@ -630,14 +604,14 @@ const Scan = struct {
                     break :prev_prs_count count;
                 };
 
-                const prs_start_idx = self.anchor.findNextLogVanished(.pr, api.types.PullRequest, prs);
+                const prs_start_idx = self.progress.pr.findNextLogVanished(api.types.PullRequest, prs);
                 for (prs[prs_start_idx..], prs_start_idx..) |pr, prs_idx| {
                     std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
 
                     const commits = try api.queries.fetchCommitsByPullRequestId(self.allocator, self.client, pr.id);
                     defer commits.deinit();
 
-                    const commits_start_idx = self.anchor.findNextLogVanished(.commit, api.types.Commit, commits.value);
+                    const commits_start_idx = self.progress.commit.findNextLogVanished(api.types.Commit, commits.value);
 
                     for (commits.value[commits_start_idx..]) |commit|
                         try Db.queries.Commit.upsert.exec(self.db_conn, .{ commit.id, commit.oid });
@@ -648,7 +622,7 @@ const Scan = struct {
                         const check_suites = try api.queries.fetchCheckSuitesByCommitId(self.allocator, self.client, commit.id);
                         defer check_suites.deinit();
 
-                        const check_suites_start_idx = self.anchor.findNextLogVanished(.check_suite, api.types.CheckSuite, check_suites.value);
+                        const check_suites_start_idx = self.progress.check_suite.findNextLogVanished(api.types.CheckSuite, check_suites.value);
                         for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
                             try Db.queries.App.upsert.exec(self.db_conn, .{
                                 check_suite.app.id,
@@ -712,26 +686,26 @@ const Scan = struct {
                                 std.log.info("{s}: {d}/{d} check runs scanned", .{ check_suite.resourcePath, check_runs_idx + 1, check_runs.value.len });
                             }
 
-                            try self.anchor.set(.check_suite, check_suite.id);
+                            try self.progress.check_suite.set(self.allocator, check_suite.id);
                             std.log.info("{s}: {d}/{d} check suites scanned", .{ commit.resourcePath, check_suites_idx + 1, check_suites.value.len });
 
                             try self.persist();
-                        } else self.anchor.clear(.check_suite);
+                        } else self.progress.check_suite.clear(self.allocator);
 
-                        try self.anchor.set(.commit, commit.id);
+                        try self.progress.commit.set(self.allocator, commit.id);
                         std.log.info("{s}: {d}/{d} commits scanned", .{ pr.resourcePath, commits_idx + 1, commits.value.len });
-                    } else self.anchor.clear(.commit);
+                    } else self.progress.commit.clear(self.allocator);
 
-                    try self.anchor.set(.pr, pr.id);
+                    try self.progress.pr.set(self.allocator, pr.id);
                     std.log.info("/{s}/{s}: {d}/{d} PRs scanned", .{ repo_owner, repo_name, prev_prs_count + prs_idx + 1, prs_count });
-                } else self.anchor.clear(.pr);
+                } else self.progress.pr.clear(self.allocator);
 
-                self.prss_idx += 1;
-            } else self.prss_idx = 0;
+                self.progress.prss_idx += 1;
+            } else self.progress.prss_idx = 0;
 
-            self.repos_idx += 1;
+            self.progress.repos_idx += 1;
             std.log.info("{d}/{d} repositories scanned", .{ repos_idx + 1, self.repos.len });
-        } else self.repos_idx = 0;
+        } else self.progress.repos_idx = 0;
 
         // All indices and anchors were just set to their zero value,
         // so persisting now will delete the scan from the DB.

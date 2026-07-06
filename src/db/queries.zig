@@ -250,7 +250,7 @@ pub const CheckRun = struct {
 };
 
 pub const Scan = struct {
-    /// tab-separated
+    /// tab-separated list
     repos: []const u8,
     historical: bool,
     repos_idx: i64,
