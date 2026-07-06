@@ -6,6 +6,7 @@ const Query = zqlite_typed.Query;
 const Exec = zqlite_typed.Exec;
 const SimpleInsert = zqlite_typed.SimpleInsert;
 const SimpleUpsert = zqlite_typed.SimpleUpsert;
+const SimpleDelete = zqlite_typed.SimpleDelete;
 const MergedTables = zqlite_typed.MergedTables;
 const columnList = zqlite_typed.columnList;
 
@@ -245,6 +246,55 @@ pub const CheckRun = struct {
             utils.meta.SubStruct(@This(), .initMany(columns)),
             struct { types.Id },
         );
+    }
+};
+
+pub const Scan = struct {
+    /// tab-separated
+    repos: []const u8,
+    historical: bool,
+    repos_idx: i64,
+    prss_idx: i64,
+    pr: ?types.Id,
+    commit: ?types.Id,
+    check_suite: ?types.Id,
+
+    const table = "scan";
+
+    pub const Column = std.meta.FieldEnum(@This());
+
+    pub const insert = SimpleInsert(table, @This());
+    pub const upsert = SimpleUpsert(table, @This(), true);
+    pub const delete = SimpleDelete(table, @This(), &.{.repos, .historical});
+
+    pub fn SelectById(comptime columns: []const Column) type {
+        return Query(
+            \\SELECT
+        ++ " " ++ columnList(table, columns) ++
+            \\
+            \\FROM "
+        ++ table ++
+            \\"
+            \\WHERE
+            \\  "
+        ++ @tagName(Column.repos) ++
+            \\" = ?
+            \\  AND "
+        ++ @tagName(Column.historical) ++
+            \\" = ?
+        ,
+            false,
+            utils.meta.SubStruct(@This(), .initMany(columns)),
+            struct { []const u8, bool },
+        );
+    }
+
+    pub fn encodeRepos(allocator: std.mem.Allocator, repos: []const []const u8) std.mem.Allocator.Error![]u8 {
+        return std.mem.join(allocator, "\t", repos);
+    }
+
+    pub fn decodeRepos(repos: []const u8) std.mem.SplitIterator(u8, .scalar) {
+        return std.mem.splitScalar(u8, repos, '\t');
     }
 };
 

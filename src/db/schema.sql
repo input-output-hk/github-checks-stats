@@ -1,3 +1,5 @@
+-- GitHub API types
+
 CREATE TABLE "repository" (
 	"id" TEXT PRIMARY KEY,
 	"owner" TEXT NOT NULL,
@@ -81,4 +83,17 @@ CREATE TABLE "check_run" (
 		'SUCCESS',
 		'TIMED_OUT'
 	))
+) STRICT, WITHOUT ROWID;
+
+-- application state
+
+CREATE TABLE "scan" (
+	"repos" TEXT NOT NULL,
+	"historical" INT NOT NULL CHECK ("historical" IN (TRUE, FALSE)),
+	"repos_idx" INT NOT NULL,
+	"prss_idx" INT NOT NULL,
+	"pr" TEXT REFERENCES "pull_request",
+	"commit" TEXT REFERENCES "commit",
+	"check_suite" TEXT REFERENCES "check_suite",
+	PRIMARY KEY ("repos", "historical")
 ) STRICT, WITHOUT ROWID;

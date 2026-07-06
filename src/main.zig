@@ -309,51 +309,38 @@ pub fn start(
     );
     defer client.deinit();
 
+    var scan: Scan = .{
+        .allocator = allocator,
+        .client = &client,
+        .db_conn = db_conn,
+        .repos = switch (config) {
+            .serve => unreachable,
+            inline .scan, .watch => |mode| mode.repos,
+        },
+        .historical = switch (config) {
+            .serve => unreachable,
+            inline else => |mode| mode.historical,
+        },
+    };
+    defer scan.deinit();
+
+    try scan.loadFromDb();
+
     switch (config) {
         .serve => unreachable,
-        .scan => {
-            var scan: Scan = .{
-                .allocator = allocator,
-                .client = &client,
-                .db_conn = db_conn,
-                .repos = switch (config) {
-                    .serve => unreachable,
-                    inline .scan, .watch => |mode| mode.repos,
+        .scan => while (true) {
+            scan.scan() catch |err| switch (err) {
+                error.RateLimited => {
+                    const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
+                    std.log.warn("rate limited; continuing in {f}", .{duration});
+                    try std.Io.sleep(io, duration, .real);
+                    continue;
                 },
-                .historical = switch (config) {
-                    .serve => unreachable,
-                    inline else => |mode| mode.historical,
-                },
+                else => |e| return e,
             };
-            defer scan.deinit();
-            while (true) {
-                scan.scan() catch |err| switch (err) {
-                    error.RateLimited => {
-                        const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
-                        std.log.warn("rate limited; continuing in {f}", .{duration});
-                        try std.Io.sleep(io, duration, .real);
-                        continue;
-                    },
-                    else => |e| return e,
-                };
-                break;
-            }
+            break;
         },
         .watch => |watch| {
-            var scan: Scan = .{
-                .allocator = allocator,
-                .client = &client,
-                .db_conn = db_conn,
-                .repos = switch (config) {
-                    .serve => unreachable,
-                    inline .scan, .watch => |mode| mode.repos,
-                },
-                .historical = switch (config) {
-                    .serve => unreachable,
-                    inline else => |mode| mode.historical,
-                },
-            };
-            defer scan.deinit();
             const interval = std.Io.Duration.fromSeconds(watch.interval_s);
             while (true) {
                 scan.scan() catch |err| switch (err) {
@@ -383,6 +370,8 @@ const Scan = struct {
     repos_idx: usize = 0,
     prss_idx: usize = 0,
 
+    anchor: Anchor = .{},
+
     /// IDs of the last item at each level that was processed to completion.
     ///
     /// GitHub GraphQL doesn't guarantee stable cursors, and numeric list
@@ -390,7 +379,7 @@ const Scan = struct {
     /// items appended in the middle of a list). Anchoring by ID makes resume
     /// robust: if the anchored item is still there we resume right after it;
     /// if it has vanished, we log a warning and restart the level.
-    anchor: struct {
+    const Anchor = struct {
         pr: ?api.types.Id = null,
         commit: ?api.types.Id = null,
         check_suite: ?api.types.Id = null,
@@ -452,10 +441,98 @@ const Scan = struct {
 
             return 0;
         }
-    } = .{},
+    };
 
     pub fn deinit(self: @This()) void {
         self.anchor.deinit();
+    }
+
+    pub fn loadFromDb(self: *@This()) !void {
+        const db_repos = try Db.queries.Scan.encodeRepos(self.allocator, self.repos);
+        defer self.allocator.free(db_repos);
+
+        if (try Db.queries.Scan.SelectById(&.{
+            .repos_idx,
+            .prss_idx,
+            .pr,
+            .commit,
+            .check_suite,
+        }).query(self.allocator, self.db_conn, .{
+            db_repos,
+            self.historical,
+        })) |db_scan| {
+            // Couldn't help myself, had to prematurely optimize this to prevent allocations.
+            const optimized = true;
+
+            defer if (optimized) {
+                // Do not free `db_scan` because we move ownership of its allocated fields into `scan`.
+            } else zqlite_typed.freeStructFromRow(@TypeOf(db_scan), self.allocator, db_scan);
+            self.repos_idx = @intCast(db_scan.repos_idx);
+            self.prss_idx = @intCast(db_scan.prss_idx);
+
+            inline for (comptime std.meta.fieldNames(Scan.Anchor)) |field|
+                std.debug.assert(@field(self.anchor, field) == null);
+
+            if (optimized)
+                self.anchor.pr = db_scan.pr
+            else if (db_scan.pr) |pr|
+                try self.anchor.set(.pr, pr);
+
+            if (optimized)
+                self.anchor.commit = db_scan.commit
+            else if (db_scan.pr) |commit|
+                try self.anchor.set(.pr, commit);
+
+            if (optimized)
+                self.anchor.check_suite = db_scan.check_suite
+            else if (db_scan.pr) |check_suite|
+                try self.anchor.set(.pr, check_suite);
+
+            if (optimized) inline for (comptime std.meta.fieldNames(Scan.Anchor)) |field| {
+                // Unnecessary as this would be caught be the compiler anyway,
+                // but meant to express that the DB schema and Zig fields need to stay in sync.
+                comptime std.debug.assert(@hasField(@TypeOf(db_scan), field));
+
+                const db_value: ?api.types.Id = @field(db_scan, field);
+                if (@field(self.anchor, field)) |scan_anchor|
+                    std.debug.assert(scan_anchor.ptr == db_value.?.ptr)
+                else
+                    std.debug.assert(db_value == null);
+            };
+
+            std.log.info("found interrupted scan in the database, continuing at {d}:{d}:{?s}:{?s}:{?s}", .{
+                self.repos_idx,
+                self.prss_idx,
+                self.anchor.pr,
+                self.anchor.commit,
+                self.anchor.check_suite,
+            });
+        }
+    }
+
+    fn persist(self: @This()) !void {
+        const db_repos = try Db.queries.Scan.encodeRepos(self.allocator, self.repos);
+        defer self.allocator.free(db_repos);
+
+        if (self.repos_idx == 0 and
+            self.prss_idx == 0 and
+            self.anchor.pr == null and
+            self.anchor.commit == null and
+            self.anchor.check_suite == null)
+            try Db.queries.Scan.delete.exec(self.db_conn, .{
+                db_repos,
+                self.historical,
+            })
+        else
+            try Db.queries.Scan.upsert.exec(self.db_conn, .{
+                db_repos,
+                self.historical,
+                @intCast(self.repos_idx),
+                @intCast(self.prss_idx),
+                self.anchor.pr,
+                self.anchor.commit,
+                self.anchor.check_suite,
+            });
     }
 
     pub fn scan(self: *@This()) !void {
@@ -637,6 +714,8 @@ const Scan = struct {
 
                             try self.anchor.set(.check_suite, check_suite.id);
                             std.log.info("{s}: {d}/{d} check suites scanned", .{ commit.resourcePath, check_suites_idx + 1, check_suites.value.len });
+
+                            try self.persist();
                         } else self.anchor.clear(.check_suite);
 
                         try self.anchor.set(.commit, commit.id);
@@ -653,6 +732,10 @@ const Scan = struct {
             self.repos_idx += 1;
             std.log.info("{d}/{d} repositories scanned", .{ repos_idx + 1, self.repos.len });
         } else self.repos_idx = 0;
+
+        // All indices and anchors were just set to their zero value,
+        // so persisting now will delete the scan from the DB.
+        try self.persist();
     }
 };
 
