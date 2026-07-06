@@ -43,12 +43,14 @@ pub fn main(init: std.process.Init) !void {
         };
 
         const Common = struct {
+            @"scan-expiry": ?u32 = @This().defaults.@"scan-expiry",
             @"user-agent": ?[]const u8 = @This().defaults.@"user-agent",
             @"token-file": ?[]const u8 = @This().defaults.@"token-file",
             historical: ?bool = @This().defaults.historical,
             @"metrics-listen": ?[]const u8 = @This().defaults.@"metrics-listen",
 
             pub const defaults = .{
+                .@"scan-expiry" = std.time.s_per_day,
                 .@"user-agent" = null,
                 .@"token-file" = null,
                 .historical = null,
@@ -57,6 +59,7 @@ pub fn main(init: std.process.Init) !void {
 
             pub const meta = .{
                 .option_docs = .{
+                    .@"scan-expiry" = "duration in seconds after which to delete interrupted scans",
                     .@"user-agent" = "User-Agent header to send, may be needed to authenticate as a GitHub App",
                     .@"token-file" = "file to read a token from to authorize with",
                     .historical = "scan only closed instead of open PRs (default: true in scan mode, false otherwise)",
@@ -77,6 +80,7 @@ pub fn main(init: std.process.Init) !void {
             };
         },
         scan: struct {
+            @"scan-expiry": @FieldType(Options.Common, "scan-expiry") = Options.Common.defaults.@"scan-expiry",
             @"user-agent": @FieldType(Options.Common, "user-agent") = Options.Common.defaults.@"user-agent",
             @"token-file": @FieldType(Options.Common, "token-file") = Options.Common.defaults.@"token-file",
             historical: @FieldType(Options.Common, "historical") = Options.Common.defaults.historical,
@@ -87,6 +91,7 @@ pub fn main(init: std.process.Init) !void {
             };
         },
         watch: struct {
+            @"scan-expiry": @FieldType(Options.Common, "scan-expiry") = Options.Common.defaults.@"scan-expiry",
             @"user-agent": @FieldType(Options.Common, "user-agent") = Options.Common.defaults.@"user-agent",
             @"token-file": @FieldType(Options.Common, "token-file") = Options.Common.defaults.@"token-file",
             historical: @FieldType(Options.Common, "historical") = Options.Common.defaults.historical,
@@ -100,6 +105,7 @@ pub fn main(init: std.process.Init) !void {
 
             pub const meta = .{
                 .option_docs = .{
+                    .@"scan-expiry" = Options.Common.meta.option_docs.@"scan-expiry",
                     .@"user-agent" = Options.Common.meta.option_docs.@"user-agent",
                     .@"token-file" = Options.Common.meta.option_docs.@"token-file",
                     .historical = Options.Common.meta.option_docs.historical,
@@ -158,6 +164,7 @@ pub fn main(init: std.process.Init) !void {
         } },
         .scan => |scan| .{ .scan = .{
             .db = options.options.db,
+            .scan_expiry_s = scan.@"scan-expiry",
             .user_agent = scan.@"user-agent",
             .token_file = scan.@"token-file",
             .historical = scan.historical orelse true,
@@ -166,6 +173,7 @@ pub fn main(init: std.process.Init) !void {
         } },
         .watch => |watch| .{ .watch = .{
             .db = options.options.db,
+            .scan_expiry_s = watch.@"scan-expiry",
             .user_agent = watch.@"user-agent",
             .token_file = watch.@"token-file",
             .historical = watch.historical orelse false,
@@ -191,6 +199,7 @@ pub const Config = union(enum) {
             .metrics_listen,
         }))),
         struct {
+            scan_expiry_s: ?u32 = std.time.s_per_day,
             user_agent: ?[]const u8 = null,
             token_file: ?[]const u8 = null,
             historical: bool,
@@ -241,6 +250,12 @@ pub fn start(
 
     const db_conn = try db.pool.acquire(io);
     defer db.pool.release(io, db_conn);
+
+    switch (config) {
+        .serve => {},
+        inline .scan, .watch => |mode| if (mode.scan_expiry_s) |scan_expiry_s|
+            try Db.queries.Scan.delete_expired.exec(db_conn, .{scan_expiry_s}),
+    }
 
     var metrics = if (switch (config) {
         inline else => |mode| mode.metrics_listen,

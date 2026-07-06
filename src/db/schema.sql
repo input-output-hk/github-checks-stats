@@ -95,5 +95,14 @@ CREATE TABLE "scan" (
 	"pr" TEXT REFERENCES "pull_request",
 	"commit" TEXT REFERENCES "commit",
 	"check_suite" TEXT REFERENCES "check_suite",
+	"updated_at" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 	PRIMARY KEY ("repos", "historical")
 ) STRICT, WITHOUT ROWID;
+
+CREATE TRIGGER "scan_updated_at"
+AFTER UPDATE ON "scan"
+FOR EACH ROW
+BEGIN
+	UPDATE "scan" SET "updated_at" = CURRENT_TIMESTAMP
+	WHERE "repos" = NEW."repos" AND "historical" = NEW."historical";
+END;
