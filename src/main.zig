@@ -668,7 +668,7 @@ const Scan = struct {
                             const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(self.allocator, self.client, check_suite.id);
                             defer check_runs.deinit();
 
-                            for (check_runs.value) |check_run| {
+                            for (check_runs.value, 0..) |check_run, check_runs_idx| {
                                 const started_at = try std.fmt.allocPrint(self.allocator, "{f}", .{check_run.startedAt});
                                 defer self.allocator.free(started_at);
 
@@ -684,18 +684,6 @@ const Scan = struct {
                                     check_run.externalId,
                                     @tagName(check_run.status),
                                     if (check_run.conclusion) |c| @tagName(c) else null,
-                                });
-                            }
-
-                            for (check_runs.value, 0..) |check_run, check_runs_idx| {
-                                const check_run_ns = if (check_run.completedAt) |completedAt| duration: {
-                                    std.debug.assert(check_run.startedAt.inner.offset == completedAt.inner.offset);
-                                    break :duration completedAt.inner.instant().timestamp - check_run.startedAt.inner.instant().timestamp;
-                                } else null;
-
-                                std.log.info("{s}: {?f}", .{
-                                    check_run.resourcePath,
-                                    if (check_run_ns) |c| std.Io.Duration.fromNanoseconds(@intCast(c)) else null,
                                 });
 
                                 std.log.info("{s}: {d}/{d} check runs scanned", .{ check_suite.resourcePath, check_runs_idx + 1, check_runs.value.len });
