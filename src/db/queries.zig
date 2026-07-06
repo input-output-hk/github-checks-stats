@@ -258,6 +258,7 @@ pub const Scan = struct {
     pr: ?types.Id,
     commit: ?types.Id,
     check_suite: ?types.Id,
+    // `updated_at` omitted
 
     const table = "scan";
 
@@ -265,7 +266,16 @@ pub const Scan = struct {
 
     pub const insert = SimpleInsert(table, @This());
     pub const upsert = SimpleUpsert(table, @This(), true);
-    pub const delete = SimpleDelete(table, @This(), &.{.repos, .historical});
+    pub const delete = SimpleDelete(table, @This(), &.{ .repos, .historical });
+
+    pub const delete_expired = Exec(
+        \\DELETE FROM "
+    ++ table ++
+        \\"
+        \\WHERE (julianday('now') - julianday("updated_at")) *
+    ++ " " ++ std.fmt.comptimePrint("{d}", .{std.time.s_per_day}) ++
+        \\ > ?
+    , struct { i64 });
 
     pub fn SelectById(comptime columns: []const Column) type {
         return Query(
