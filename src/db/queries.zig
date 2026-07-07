@@ -184,6 +184,7 @@ pub const CheckSuite = struct {
     commit: types.Id,
     app: types.Id,
     created_at: []const u8, // TODO make this typed?
+    updated_at: []const u8, // TODO make this typed?
     status: []const u8, // TODO make this typed?
     conclusion: ?[]const u8, // TODO make this typed?
 
