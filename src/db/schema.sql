@@ -36,6 +36,7 @@ CREATE TABLE "check_suite" (
 	"commit" TEXT NOT NULL REFERENCES "commit",
 	"app" TEXT NOT NULL REFERENCES "app",
 	"created_at" TEXT NOT NULL, -- ISO8601
+	"updated_at" TEXT NOT NULL, -- ISO8601
 	"status" TEXT NOT NULL CHECK ("status" IN (
 		'COMPLETED',
 		'IN_PROGRESS',
