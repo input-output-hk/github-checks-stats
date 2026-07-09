@@ -10,7 +10,7 @@
           ../src
         ];
 
-        zigDepsHash = "sha256-1a/yjmy5BYYGapYaTfPK7ePqbBIqoT84m6E06pXbdRU=";
+        zigDepsHash = "sha256-jWMgnn29T7KfsV6ZpXAv4ImieLB2r6yuNLBh9PSX4L4=";
 
         nativeBuildInputs = with pkgs; [
           pkg-config
