@@ -171,23 +171,27 @@ pub const Scan = struct {
     pr: ?types.Id,
     commit: ?types.Id,
     check_suite: ?types.Id,
-    // `updated_at` omitted
+    updated_at: []const u8, // TODO make this typed?
 
     const table = "scan";
 
     pub const Column = std.meta.FieldEnum(@This());
 
-    pub const insert = SimpleInsert(table, @This());
-    pub const upsert = SimpleUpsert(table, @This(), true);
+    /// All columns meant to be set by the application, so all except `updated_at`.
+    const app_columns = std.enums.EnumSet(Column).full.differenceWith(.initOne(.updated_at));
+
+    pub const insert = SimpleInsert(table, utils.meta.SubStruct(@This(), app_columns));
+    pub const upsert = SimpleUpsert(table, utils.meta.SubStruct(@This(), app_columns), true);
     pub const delete = SimpleDelete(table, utils.meta.SubStruct(@This(), .initMany(&.{ .repos, .historical })));
 
     pub const delete_expired = Exec(
         std.fmt.comptimePrint(
-            \\DELETE FROM {f}
-            \\WHERE (julianday('now') - julianday("updated_at")) * {d} > ?
+            \\DELETE FROM {[scan]f}
+            \\WHERE (julianday('now') - julianday({[updated_at]f})) * {[s_per_day]d} > ?
         , .{
-            fmtIdentifier(table),
-            std.time.s_per_day,
+            .scan = fmtIdentifier(table),
+            .updated_at = fmtIdentifier(@tagName(Column.updated_at)),
+            .s_per_day = std.time.s_per_day,
         }),
         struct { i64 },
     );
