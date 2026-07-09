@@ -462,6 +462,7 @@ const Scan = struct {
             .pr,
             .commit,
             .check_suite,
+            .updated_at,
         })).query(self.allocator, self.db_conn, .{
             db_repos,
             self.historical,
@@ -473,7 +474,9 @@ const Scan = struct {
             const optimized = true;
 
             defer if (optimized) {
-                // Do not free `db_scan` because we move ownership of its allocated fields into `scan`.
+                // Do not free `db_scan` entirely because we move ownership of some of its allocated fields into `scan`.
+                // Only free the remaining ones.
+                self.allocator.free(db_scan.updated_at);
             } else zqlite_typed.freeStructFromRow(@TypeOf(db_scan), self.allocator, db_scan);
 
             inline for (.{ "pr", "commit", "check_suite" }) |field| {
@@ -489,7 +492,8 @@ const Scan = struct {
                     anchor.clear(self.allocator);
             }
 
-            std.log.info("continuing interrupted scan at repo={d}/{d} prs_batch={d} pr={?s} commit={?s} check_suite={?s}", .{
+            std.log.info("continuing interrupted scan from {s} at repo={d}/{d} prs_batch={d} pr={?s} commit={?s} check_suite={?s}", .{
+                db_scan.updated_at,
                 self.progress.repos_idx + 1,
                 self.repos.len,
                 self.progress.prss_idx + 1,
