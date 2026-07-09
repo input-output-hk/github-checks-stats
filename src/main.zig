@@ -456,13 +456,13 @@ const Scan = struct {
         const db_repos = try Db.queries.Scan.encodeRepos(self.allocator, self.repos);
         defer self.allocator.free(db_repos);
 
-        if (try Db.queries.Scan.SelectById(&.{
+        if (try Db.queries.Scan.SelectById(.initMany(&.{
             .repos_idx,
             .prss_idx,
             .pr,
             .commit,
             .check_suite,
-        }).query(self.allocator, self.db_conn, .{
+        })).query(self.allocator, self.db_conn, .{
             db_repos,
             self.historical,
         })) |db_scan| {
@@ -554,8 +554,8 @@ const Scan = struct {
             // so fetch them again to update them in the database.
             const prs_closed = if (!self.historical) prs_closed: {
                 var prs_db_open = try Db.queries.PullRequest.SelectByRepoAndStates(
-                    &.{.id},
-                    &.{.OPEN},
+                    .initOne(.id),
+                    .initOne(.OPEN),
                 ).queryIterator(self.db_conn, .{
                     repo.value.owner.login,
                     repo.value.name,
@@ -642,7 +642,7 @@ const Scan = struct {
                         for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
                             const scan_check_runs =
                                 self.historical or
-                                if (try Db.queries.CheckSuite.SelectById(&.{ .updated_at, .status }).query(self.allocator, self.db_conn, .{check_suite.id})) |db_check_suite| scan_check_runs: {
+                                if (try Db.queries.CheckSuite.SelectById(.initMany(&.{ .updated_at, .status })).query(self.allocator, self.db_conn, .{check_suite.id})) |db_check_suite| scan_check_runs: {
                                     defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
 
                                     const db_check_suite_updated_at = try zeit.Time.fromISO8601(db_check_suite.updated_at);
