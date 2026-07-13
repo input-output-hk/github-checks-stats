@@ -14,10 +14,6 @@ const Db = @import("Db.zig");
 const Metrics = @import("Metrics.zig");
 
 pub fn main(init: std.process.Init) !void {
-    var stderr_buffer: [1024]u8 = undefined;
-    var stderr = std.Io.File.stderr().writer(init.io, &stderr_buffer);
-    const stderr_w = &stderr.interface;
-
     const Options = struct {
         db: [:0]const u8 = defaults.db,
 
@@ -149,6 +145,10 @@ pub fn main(init: std.process.Init) !void {
         };
 
         if (invalid) {
+            var stderr_buffer: [1024]u8 = undefined;
+            var stderr = std.Io.File.stderr().writer(init.io, &stderr_buffer);
+            const stderr_w = &stderr.interface;
+
             try args.printHelpWithVerb(Options, Verbs, "github-checks-stats", stderr_w);
             try stderr_w.flush();
 
