@@ -15,11 +15,7 @@ const Metrics = @import("Metrics.zig");
 
 pub fn main(init: std.process.Init) !void {
     const Options = struct {
-        db: [:0]const u8 = defaults.db,
-
-        const defaults = .{
-            .db = "github-checks-stats.sqlite",
-        };
+        db: @FieldType(Config.Serve, "db") = std.meta.fieldInfo(Config.Serve, .db).defaultValue().?,
 
         pub const meta = .{
             .usage_summary = "[OPTION]... <serve|scan|watch> [VERB_OPTION]... [REPO]...",
@@ -31,85 +27,60 @@ pub fn main(init: std.process.Init) !void {
             \\watch: Scan in a loop.
             ,
             .option_docs = .{
-                .db = "path to state database (default: " ++ defaults.db ++ ")",
-
-                .@"user-agent" = Common.meta.option_docs.@"user-agent",
-                .@"token-file" = Common.meta.option_docs.@"token-file",
-                .historical = Common.meta.option_docs.historical,
-                .@"metrics-listen" = Common.meta.option_docs.@"metrics-listen",
+                .db = "path to state database (default: " ++ std.meta.fieldInfo(@This(), .db).defaultValue().? ++ ")",
             },
         };
 
-        const Common = struct {
-            @"scan-expiry": ?u32 = @This().defaults.@"scan-expiry",
-            @"user-agent": ?[]const u8 = @This().defaults.@"user-agent",
-            @"token-file": ?[]const u8 = @This().defaults.@"token-file",
-            historical: ?bool = @This().defaults.historical,
-            @"metrics-listen": ?[]const u8 = @This().defaults.@"metrics-listen",
-
-            pub const defaults = .{
-                .@"scan-expiry" = std.time.s_per_day,
-                .@"user-agent" = null,
-                .@"token-file" = null,
-                .historical = null,
-                .@"metrics-listen" = null,
-            };
-
-            pub const meta = .{
-                .option_docs = .{
-                    .@"scan-expiry" = "duration in seconds after which to delete interrupted scans",
-                    .@"user-agent" = "User-Agent header to send, may be needed to authenticate as a GitHub App",
-                    .@"token-file" = "file to read a token from to authorize with",
-                    .historical = "scan only closed instead of open PRs (default: true in scan mode, false otherwise)",
-                    .@"metrics-listen" = "listen address and port or unix domain socket after `unix:` prefix to bind for metrics",
-                },
-            };
+        const meta_common = .{
+            .option_docs = .{
+                .@"scan-expiry" = "duration in seconds after which to delete interrupted scans",
+                .@"user-agent" = "User-Agent header to send, may be needed to authenticate as a GitHub App",
+                .@"token-file" = "file to read a token from to authorize with",
+                .historical = "scan only closed instead of open PRs (default: true in scan mode, false otherwise)",
+                .@"metrics-listen" = "listen address and port or unix domain socket after `unix:` prefix to bind for metrics",
+            },
         };
     };
 
     const Verbs = union(enum) {
         serve: struct {
-            @"metrics-listen": @FieldType(Options.Common, "metrics-listen") = Options.Common.defaults.@"metrics-listen",
+            @"metrics-listen": ?@FieldType(Config.Serve, "metrics_listen") = std.meta.fieldInfo(Config.Serve, .metrics_listen).defaultValue(),
 
             pub const meta = .{
                 .option_docs = .{
-                    .@"metrics-listen" = Options.Common.meta.option_docs.@"metrics-listen" ++ " (required)",
+                    .@"metrics-listen" = Options.meta_common.option_docs.@"metrics-listen" ++ " (required)",
                 },
             };
         },
         scan: struct {
-            @"scan-expiry": @FieldType(Options.Common, "scan-expiry") = Options.Common.defaults.@"scan-expiry",
-            @"user-agent": @FieldType(Options.Common, "user-agent") = Options.Common.defaults.@"user-agent",
-            @"token-file": @FieldType(Options.Common, "token-file") = Options.Common.defaults.@"token-file",
-            historical: @FieldType(Options.Common, "historical") = Options.Common.defaults.historical,
-            @"metrics-listen": @FieldType(Options.Common, "metrics-listen") = Options.Common.defaults.@"metrics-listen",
+            @"scan-expiry": @FieldType(Config.Scan, "scan_expiry_s") = std.meta.fieldInfo(Config.Scan, .scan_expiry_s).defaultValue().?,
+            @"user-agent": @FieldType(Config.Scan, "user_agent") = std.meta.fieldInfo(Config.Scan, .user_agent).defaultValue().?,
+            @"token-file": @FieldType(Config.Scan, "token_file") = std.meta.fieldInfo(Config.Scan, .token_file).defaultValue().?,
+            historical: ?@FieldType(Config.Scan, "historical") = std.meta.fieldInfo(Config.Scan, .historical).defaultValue(),
+            @"metrics-listen": @FieldType(Config.Scan, "metrics_listen") = std.meta.fieldInfo(Config.Scan, .metrics_listen).defaultValue().?,
 
             pub const meta = .{
-                .option_docs = Options.Common.meta.option_docs,
+                .option_docs = Options.meta_common.option_docs,
             };
         },
         watch: struct {
-            @"scan-expiry": @FieldType(Options.Common, "scan-expiry") = Options.Common.defaults.@"scan-expiry",
-            @"user-agent": @FieldType(Options.Common, "user-agent") = Options.Common.defaults.@"user-agent",
-            @"token-file": @FieldType(Options.Common, "token-file") = Options.Common.defaults.@"token-file",
-            historical: @FieldType(Options.Common, "historical") = Options.Common.defaults.historical,
-            @"metrics-listen": @FieldType(Options.Common, "metrics-listen") = Options.Common.defaults.@"metrics-listen",
+            @"scan-expiry": @FieldType(Config.Watch, "scan_expiry_s") = std.meta.fieldInfo(Config.Watch, .scan_expiry_s).defaultValue().?,
+            @"user-agent": @FieldType(Config.Watch, "user_agent") = std.meta.fieldInfo(Config.Watch, .user_agent).defaultValue().?,
+            @"token-file": @FieldType(Config.Watch, "token_file") = std.meta.fieldInfo(Config.Watch, .token_file).defaultValue().?,
+            historical: ?@FieldType(Config.Watch, "historical") = std.meta.fieldInfo(Config.Watch, .historical).defaultValue(),
+            @"metrics-listen": @FieldType(Config.Watch, "metrics_listen") = std.meta.fieldInfo(Config.Watch, .metrics_listen).defaultValue().?,
 
-            interval: u32 = defaults.interval,
-
-            const defaults = .{
-                .interval = std.time.s_per_hour,
-            };
+            interval: @FieldType(Config.Watch, "interval_s") = std.meta.fieldInfo(Config.Watch, .interval_s).defaultValue().?,
 
             pub const meta = .{
                 .option_docs = .{
-                    .@"scan-expiry" = Options.Common.meta.option_docs.@"scan-expiry",
-                    .@"user-agent" = Options.Common.meta.option_docs.@"user-agent",
-                    .@"token-file" = Options.Common.meta.option_docs.@"token-file",
-                    .historical = Options.Common.meta.option_docs.historical,
-                    .@"metrics-listen" = Options.Common.meta.option_docs.@"metrics-listen",
+                    .@"scan-expiry" = Options.meta_common.option_docs.@"scan-expiry",
+                    .@"user-agent" = Options.meta_common.option_docs.@"user-agent",
+                    .@"token-file" = Options.meta_common.option_docs.@"token-file",
+                    .historical = Options.meta_common.option_docs.historical,
+                    .@"metrics-listen" = Options.meta_common.option_docs.@"metrics-listen",
 
-                    .interval = std.fmt.comptimePrint("seconds to sleep between iterations (default: {d})", .{defaults.interval}),
+                    .interval = std.fmt.comptimePrint("seconds to sleep between iterations (default: {d})", .{std.meta.fieldInfo(@This(), .interval).defaultValue().?}),
                 },
             };
         },
