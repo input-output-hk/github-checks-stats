@@ -647,7 +647,7 @@ const Scan = struct {
                         for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
                             const scan_check_runs =
                                 self.historical or
-                                if (try Db.queries.CheckSuite.SelectById(.initMany(&.{ .updated_at, .status })).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| scan_check_runs: {
+                                if (try Db.queries.CheckSuite.SelectById(.initMany(&.{ .updated_at })).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| scan_check_runs: {
                                     defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
 
                                     const db_check_suite_updated_at = try zeit.Time.fromISO8601(db_check_suite.updated_at);
