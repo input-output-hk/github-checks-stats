@@ -328,8 +328,6 @@ pub fn start(
 
     var scan: Scan = .{
         .allocator = allocator,
-        .client = &client,
-        .db_conn = db_conn,
         .repos = switch (config) {
             .serve => unreachable,
             inline .scan, .watch => |mode| mode.repos,
@@ -341,7 +339,7 @@ pub fn start(
     };
     defer scan.deinit();
 
-    try scan.loadFromDb();
+    try scan.loadFromDb(db_conn);
 
     const retry_opts = zretry.RetryOptions{
         .io = io,
@@ -355,7 +353,7 @@ pub fn start(
     switch (config) {
         .serve => unreachable,
         .scan => while (true) {
-            scan.scan(retry_opts) catch |err| switch (err) {
+            scan.scan(&client, db_conn, retry_opts) catch |err| switch (err) {
                 error.RateLimited => {
                     const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
                     std.log.warn("rate limited; continuing in {f}", .{duration});
@@ -369,7 +367,7 @@ pub fn start(
         .watch => |watch| {
             const interval = std.Io.Duration.fromSeconds(watch.interval_s);
             while (true) {
-                scan.scan(retry_opts) catch |err| switch (err) {
+                scan.scan(&client, db_conn, retry_opts) catch |err| switch (err) {
                     error.RateLimited => {
                         const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
                         std.log.warn("rate limited; continuing in {f}", .{duration});
@@ -388,8 +386,7 @@ pub fn start(
 /// Stateful scan that can continue where it left off.
 const Scan = struct {
     allocator: std.mem.Allocator,
-    client: *api.Client,
-    db_conn: zqlite.Conn,
+
     repos: []const []const u8,
     historical: bool,
 
@@ -462,7 +459,7 @@ const Scan = struct {
         self.progress.deinit(self.allocator);
     }
 
-    pub fn loadFromDb(self: *@This()) !void {
+    pub fn loadFromDb(self: *@This(), db_conn: zqlite.Conn) !void {
         const db_repos = try Db.queries.Scan.encodeRepos(self.allocator, self.repos);
         defer self.allocator.free(db_repos);
 
@@ -473,7 +470,7 @@ const Scan = struct {
             .commit,
             .check_suite,
             .updated_at,
-        })).query(self.allocator, self.db_conn, .{
+        })).query(self.allocator, db_conn, .{
             db_repos,
             self.historical,
         })) |db_scan| {
@@ -514,7 +511,7 @@ const Scan = struct {
         }
     }
 
-    fn persist(self: @This()) !void {
+    fn persist(self: @This(), db_conn: zqlite.Conn) !void {
         const db_repos = try Db.queries.Scan.encodeRepos(self.allocator, self.repos);
         defer self.allocator.free(db_repos);
 
@@ -523,12 +520,12 @@ const Scan = struct {
             self.progress.pr.id == null and
             self.progress.commit.id == null and
             self.progress.check_suite.id == null)
-            try Db.queries.Scan.delete.exec(self.db_conn, .{
+            try Db.queries.Scan.delete.exec(db_conn, .{
                 db_repos,
                 self.historical,
             })
         else
-            try Db.queries.Scan.upsert.exec(self.db_conn, .{
+            try Db.queries.Scan.upsert.exec(db_conn, .{
                 db_repos,
                 self.historical,
                 @intCast(self.progress.repos_idx),
@@ -539,7 +536,7 @@ const Scan = struct {
             });
     }
 
-    pub fn scan(self: *@This(), retry_opts: zretry.RetryOptions) !void {
+    pub fn scan(self: *@This(), client: *api.Client, db_conn: zqlite.Conn, retry_opts: zretry.RetryOptions) !void {
         for (self.repos[self.progress.repos_idx..], self.progress.repos_idx..) |repo_full, repos_idx| {
             const repo_owner, const repo_name = repo: {
                 errdefer std.log.err("malformed repository \"{s}\", must be of form \"foo/bar\"", .{repo_full});
@@ -554,19 +551,19 @@ const Scan = struct {
 
             const repo = try zretry.zretry(api.queries.fetchRepoByFullName, .{
                 self.allocator,
-                self.client,
+                client,
                 repo_owner,
                 repo_name,
             }, retry_opts);
             defer repo.deinit();
 
-            try Db.queries.Repository.upsert.exec(self.db_conn, .{ repo.value.id, repo.value.owner.login, repo.value.name });
+            try Db.queries.Repository.upsert.exec(db_conn, .{ repo.value.id, repo.value.owner.login, repo.value.name });
 
             std.log.info("/{s}/{s}: scanning for pull requests…", .{ repo_owner, repo_name });
 
             const prs_open = try zretry.zretry(api.queries.fetchPullRequestsByRepo, .{
                 self.allocator,
-                self.client,
+                client,
                 repo.value.owner.login,
                 repo.value.name,
                 if (self.historical) null else @as([]const api.types.PullRequestState, &.{.OPEN}),
@@ -581,7 +578,7 @@ const Scan = struct {
                 var prs_db_open = try Db.queries.PullRequest.SelectByRepoAndStates(
                     .initOne(.id),
                     .initOne(.OPEN),
-                ).queryIterator(self.db_conn, .{
+                ).queryIterator(db_conn, .{
                     repo.value.owner.login,
                     repo.value.name,
                 });
@@ -617,7 +614,7 @@ const Scan = struct {
 
                 break :prs_closed try zretry.zretry(api.queries.fetchPullRequestsByIds, .{
                     self.allocator,
-                    self.client,
+                    client,
                     prs_closed_ids.items,
                 }, retry_opts);
             } else null;
@@ -631,7 +628,7 @@ const Scan = struct {
             for (prss[self.progress.prss_idx..]) |prs| {
                 const prs_start_idx = if (self.progress.pr.find(api.types.PullRequest, prs)) |idx| idx + 1 else 0;
                 for (prs[prs_start_idx..]) |pr|
-                    try Db.queries.PullRequest.upsert.exec(self.db_conn, .{ pr.id, repo.value.id, pr.number, @tagName(pr.state) });
+                    try Db.queries.PullRequest.upsert.exec(db_conn, .{ pr.id, repo.value.id, pr.number, @tagName(pr.state) });
             }
 
             const prs_count = prs_count: {
@@ -655,7 +652,7 @@ const Scan = struct {
 
                     const commits = try zretry.zretry(api.queries.fetchCommitsByPullRequestId, .{
                         self.allocator,
-                        self.client,
+                        client,
                         pr.id,
                     }, retry_opts);
                     defer commits.deinit();
@@ -663,14 +660,14 @@ const Scan = struct {
                     const commits_start_idx = self.progress.commit.findNextLogVanished(api.types.Commit, commits.value);
 
                     for (commits.value[commits_start_idx..]) |commit|
-                        try Db.queries.Commit.upsert.exec(self.db_conn, .{ commit.id, commit.oid });
+                        try Db.queries.Commit.upsert.exec(db_conn, .{ commit.id, commit.oid });
 
                     for (commits.value[commits_start_idx..], commits_start_idx..) |commit, commits_idx| {
                         std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
 
                         const check_suites = try zretry.zretry(api.queries.fetchCheckSuitesByCommitId, .{
                             self.allocator,
-                            self.client,
+                            client,
                             commit.id,
                         }, retry_opts);
                         defer check_suites.deinit();
@@ -679,7 +676,7 @@ const Scan = struct {
                         for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
                             const scan_check_runs =
                                 self.historical or
-                                if (try Db.queries.CheckSuite.SelectById(.initMany(&.{ .updated_at, .status })).query(self.allocator, self.db_conn, .{check_suite.id})) |db_check_suite| scan_check_runs: {
+                                if (try Db.queries.CheckSuite.SelectById(.initMany(&.{ .updated_at, .status })).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| scan_check_runs: {
                                     defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
 
                                     const db_check_suite_updated_at = try zeit.Time.fromISO8601(db_check_suite.updated_at);
@@ -687,7 +684,7 @@ const Scan = struct {
                                 } else true;
 
                             if (scan_check_runs) {
-                                try Db.queries.App.upsert.exec(self.db_conn, .{
+                                try Db.queries.App.upsert.exec(db_conn, .{
                                     check_suite.app.id,
                                     check_suite.app.slug,
                                     check_suite.app.name,
@@ -703,7 +700,7 @@ const Scan = struct {
                                     const status = try std.fmt.allocPrint(self.allocator, "{f}", .{check_suite.status});
                                     defer self.allocator.free(status);
 
-                                    try Db.queries.CheckSuite.upsert.exec(self.db_conn, .{
+                                    try Db.queries.CheckSuite.upsert.exec(db_conn, .{
                                         check_suite.id,
                                         repo.value.id,
                                         commit.id,
@@ -719,7 +716,7 @@ const Scan = struct {
 
                                 const check_runs = try zretry.zretry(api.queries.fetchCheckRunsByCheckSuiteId, .{
                                     self.allocator,
-                                    self.client,
+                                    client,
                                     check_suite.id,
                                 }, retry_opts);
                                 defer check_runs.deinit();
@@ -731,7 +728,7 @@ const Scan = struct {
                                     const completed_at = if (check_run.completedAt) |c| try std.fmt.allocPrint(self.allocator, "{f}", .{c}) else null;
                                     defer if (completed_at) |c| self.allocator.free(c);
 
-                                    try Db.queries.CheckRun.upsert.exec(self.db_conn, .{
+                                    try Db.queries.CheckRun.upsert.exec(db_conn, .{
                                         check_run.id,
                                         check_suite.id,
                                         check_run.name,
@@ -749,7 +746,7 @@ const Scan = struct {
                             try self.progress.check_suite.set(self.allocator, check_suite.id);
                             std.log.info("{s}: {d}/{d} check suites scanned", .{ commit.resourcePath, check_suites_idx + 1, check_suites.value.len });
 
-                            try self.persist();
+                            try self.persist(db_conn);
                         } else self.progress.check_suite.clear(self.allocator);
 
                         try self.progress.commit.set(self.allocator, commit.id);
@@ -769,7 +766,7 @@ const Scan = struct {
 
         // All indices and anchors were just set to their zero value,
         // so persisting now will delete the scan from the DB.
-        try self.persist();
+        try self.persist(db_conn);
     }
 };
 
