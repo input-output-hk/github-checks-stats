@@ -57,163 +57,141 @@ pub fn init(
 }
 
 pub const QueryError =
-    std.Uri.ParseError ||
     std.http.Client.FetchError ||
     std.json.ParseError(std.json.Scanner) ||
-    error{ HttpConnectionClosing, QueryAttemptsExceeded, RateLimited };
+    error{ QueryFailed, RateLimited };
 
 /// If `error.RateLimited` is returned, `rate_limit_reset` is non-null.
 pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, payload: []const u8) QueryError!api.Cloned(Data) {
     var response_body = std.Io.Writer.Allocating.init(allocator);
     defer response_body.deinit();
 
-    const max_attempts = 5;
-    attempts: for (1..max_attempts + 1) |attempt| {
-        const last_attempt = attempt == max_attempts;
+    response_body.clearRetainingCapacity();
 
-        response_body.clearRetainingCapacity();
+    var request = try self.client.request(.POST, self.endpoint, .{
+        .headers = .{
+            .authorization = if (self.authorization) |authorization| .{ .override = authorization } else .default,
+            .user_agent = if (self.user_agent) |user_agent| .{ .override = user_agent } else .default,
+        },
+        .extra_headers = &.{
+            // https://docs.github.com/en/graphql/guides/migrating-graphql-global-node-ids
+            // https://github.blog/2021-11-16-graphql-global-id-migration-update/
+            .{ .name = "X-Github-Next-Global-ID", .value = "1" },
+        },
+    });
+    defer request.deinit();
 
-        var request = try self.client.request(.POST, self.endpoint, .{
-            .headers = .{
-                .authorization = if (self.authorization) |authorization| .{ .override = authorization } else .default,
-                .user_agent = if (self.user_agent) |user_agent| .{ .override = user_agent } else .default,
-            },
-            .extra_headers = &.{
-                // https://docs.github.com/en/graphql/guides/migrating-graphql-global-node-ids
-                // https://github.blog/2021-11-16-graphql-global-id-migration-update/
-                .{ .name = "X-Github-Next-Global-ID", .value = "1" },
-            },
-        });
-        defer request.deinit();
+    request.transfer_encoding = .{ .content_length = payload.len };
+    {
+        var body_buffer: [utils.mem.b_per_kib]u8 = undefined;
+        var body_w = try request.sendBodyUnflushed(&body_buffer);
 
-        request.transfer_encoding = .{ .content_length = payload.len };
-        {
-            var body_buffer: [utils.mem.b_per_kib]u8 = undefined;
-            var body_w = try request.sendBodyUnflushed(&body_buffer);
-
-            try body_w.writer.writeAll(payload);
-            try body_w.end();
-            try body_w.flush();
-        }
-
-        var response = response: {
-            var redirect_buffer: [8000]u8 = undefined;
-            break :response request.receiveHead(&redirect_buffer) catch |err| switch (err) {
-                error.HttpConnectionClosing => {
-                    if (last_attempt) return err;
-                    continue :attempts;
-                },
-                else => |e| return e,
-            };
-        };
-
-        {
-            // https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#exceeding-the-rate-limit
-            // We need to read headers now as they are invalidated once the response body is initialized.
-            self.rate_limit_reset = null;
-            var headers = response.head.iterateHeaders();
-            while (headers.next()) |header| {
-                if (std.ascii.eqlIgnoreCase(header.name, "retry-after")) {
-                    const duration_secs = try std.fmt.parseInt(i64, header.value, 10);
-                    self.rate_limit_reset = std.Io.Timestamp.now(self.client.io, .real).addDuration(.fromSeconds(duration_secs));
-                } else if (std.ascii.eqlIgnoreCase(header.name, "x-ratelimit-reset")) {
-                    const timestamp_secs = try std.fmt.parseInt(i96, header.value, 10);
-                    self.rate_limit_reset = std.Io.Timestamp.fromNanoseconds(timestamp_secs * std.time.ns_per_s);
-                }
-            }
-        }
-
-        {
-            const decompress_buffer: []u8 = switch (response.head.content_encoding) {
-                .identity => &.{},
-                .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
-                .deflate, .gzip => try allocator.alloc(u8, std.compress.flate.max_window_len),
-                .compress => return std.http.Client.FetchError.UnsupportedCompressionMethod,
-            };
-            defer allocator.free(decompress_buffer);
-
-            var transfer_buffer: [64]u8 = undefined;
-            var decompress: std.http.Decompress = undefined;
-            const response_body_reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
-
-            _ = try response_body_reader.streamRemaining(&response_body.writer);
-        }
-
-        if (response.head.status != .ok) {
-            const retry = response.head.status.class() == .server_error and !last_attempt;
-
-            const msg_fmt = "query failed with code {d} ({s}){s}\n{s}";
-            const msg_fmt_args = .{
-                @intFromEnum(response.head.status),
-                response.head.status.phrase() orelse "unknown",
-                if (retry) ", retrying…" else "",
-                response_body.written(),
-            };
-
-            if (retry)
-                std.log.warn(msg_fmt, msg_fmt_args)
-            else
-                std.log.err(msg_fmt, msg_fmt_args);
-            continue;
-        }
-
-        std.log.debug("GitHub response (raw): {s}", .{response_body.written()});
-
-        const parsed = std.json.parseFromSlice(
-            struct {
-                data: ?Data = null,
-                errors: []const ResultError = &.{},
-                extensions: struct {
-                    warnings: []const std.json.Value = &.{},
-                } = .{},
-            },
-            allocator,
-            response_body.written(),
-            .{ .ignore_unknown_fields = true },
-        ) catch |err| {
-            std.log.err("failed to parse response from GitHub: {s}", .{@errorName(err)});
-            return err;
-        };
-        defer parsed.deinit();
-
-        for (parsed.value.extensions.warnings) |warning| {
-            const warning_json = try std.json.Stringify.valueAlloc(allocator, warning, .{ .whitespace = .indent_tab });
-            defer allocator.free(warning_json);
-
-            std.log.warn("GitHub responded with warning: {s}", .{warning_json});
-        }
-
-        var rate_limited = false;
-        for (parsed.value.errors) |err| {
-            if (if (err.type) |t| t == .RATE_LIMIT else false) {
-                rate_limited = true;
-            } else {
-                const err_json = try std.json.Stringify.valueAlloc(allocator, err, .{ .whitespace = .indent_tab });
-                defer allocator.free(err_json);
-
-                std.log.err("GitHub responded with error: {s}", .{err_json});
-            }
-        }
-        if (rate_limited) {
-            if (self.rate_limit_reset == null)
-                self.rate_limit_reset = std.Io.Timestamp.now(self.client.io, .real).addDuration(.fromSeconds(std.time.s_per_min));
-            std.debug.assert(self.rate_limit_reset != null);
-            return error.RateLimited;
-        }
-        for (parsed.value.errors) |err| {
-            if (err.locations != null or
-                err.path != null) continue;
-
-            if (std.ascii.indexOfIgnoreCase(err.message, "error") != null) continue :attempts;
-        }
-        if (parsed.value.errors.len != 0) break;
-
-        if (parsed.value.data) |data| return api.clone(allocator, data);
-
-        break;
+        try body_w.writer.writeAll(payload);
+        try body_w.end();
+        try body_w.flush();
     }
 
-    return error.QueryAttemptsExceeded;
+    var response = response: {
+        var redirect_buffer: [8000]u8 = undefined;
+        break :response try request.receiveHead(&redirect_buffer);
+    };
+
+    {
+        // https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#exceeding-the-rate-limit
+        // We need to read headers now as they are invalidated once the response body is initialized.
+        self.rate_limit_reset = null;
+        var headers = response.head.iterateHeaders();
+        while (headers.next()) |header| {
+            if (std.ascii.eqlIgnoreCase(header.name, "retry-after")) {
+                const duration_secs = try std.fmt.parseInt(i64, header.value, 10);
+                self.rate_limit_reset = std.Io.Timestamp.now(self.client.io, .real).addDuration(.fromSeconds(duration_secs));
+            } else if (std.ascii.eqlIgnoreCase(header.name, "x-ratelimit-reset")) {
+                const timestamp_secs = try std.fmt.parseInt(i96, header.value, 10);
+                self.rate_limit_reset = std.Io.Timestamp.fromNanoseconds(timestamp_secs * std.time.ns_per_s);
+            }
+        }
+    }
+
+    {
+        const decompress_buffer: []u8 = switch (response.head.content_encoding) {
+            .identity => &.{},
+            .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
+            .deflate, .gzip => try allocator.alloc(u8, std.compress.flate.max_window_len),
+            .compress => return std.http.Client.FetchError.UnsupportedCompressionMethod,
+        };
+        defer allocator.free(decompress_buffer);
+
+        var transfer_buffer: [64]u8 = undefined;
+        var decompress: std.http.Decompress = undefined;
+        const response_body_reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+
+        _ = try response_body_reader.streamRemaining(&response_body.writer);
+    }
+
+    if (response.head.status != .ok) {
+        std.log.warn("query failed with code {d} ({s})\n{s}", .{
+            @intFromEnum(response.head.status),
+            response.head.status.phrase() orelse "unknown",
+            response_body.written(),
+        });
+        return error.QueryFailed;
+    }
+
+    std.log.debug("GitHub response (raw): {s}", .{response_body.written()});
+
+    const parsed = std.json.parseFromSlice(
+        struct {
+            data: ?Data = null,
+            errors: []const ResultError = &.{},
+            extensions: struct {
+                warnings: []const std.json.Value = &.{},
+            } = .{},
+        },
+        allocator,
+        response_body.written(),
+        .{ .ignore_unknown_fields = true },
+    ) catch |err| {
+        std.log.err("failed to parse response from GitHub: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer parsed.deinit();
+
+    for (parsed.value.extensions.warnings) |warning| {
+        const warning_json = try std.json.Stringify.valueAlloc(allocator, warning, .{ .whitespace = .indent_tab });
+        defer allocator.free(warning_json);
+
+        std.log.warn("GitHub responded with warning: {s}", .{warning_json});
+    }
+
+    var rate_limited = false;
+    for (parsed.value.errors) |err| {
+        if (if (err.type) |t| t == .RATE_LIMIT else false) {
+            rate_limited = true;
+        } else {
+            const err_json = try std.json.Stringify.valueAlloc(allocator, err, .{ .whitespace = .indent_tab });
+            defer allocator.free(err_json);
+
+            std.log.err("GitHub responded with error: {s}", .{err_json});
+        }
+    }
+    if (rate_limited) {
+        if (self.rate_limit_reset == null)
+            self.rate_limit_reset = std.Io.Timestamp.now(self.client.io, .real).addDuration(.fromSeconds(std.time.s_per_min));
+        std.debug.assert(self.rate_limit_reset != null);
+        return error.RateLimited;
+    }
+    for (parsed.value.errors) |err| {
+        if (err.locations != null or
+            err.path != null) continue;
+
+        if (std.ascii.indexOfIgnoreCase(err.message, "error") != null) return error.QueryFailed;
+    }
+    if (parsed.value.errors.len != 0) return error.QueryFailed;
+
+    return if (parsed.value.data) |data|
+        api.clone(allocator, data)
+    else
+        error.QueryFailed;
 }
 
 /// https://spec.graphql.org/October2021/#sec-Errors.Error-result-format

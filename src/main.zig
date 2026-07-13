@@ -7,6 +7,7 @@ const utils = @import("utils");
 const zeit = @import("zeit");
 const zqlite = @import("zqlite");
 const zqlite_typed = @import("zqlite-typed");
+const zretry = @import("zretry");
 
 const api = @import("api.zig");
 const Db = @import("Db.zig");
@@ -342,10 +343,19 @@ pub fn start(
 
     try scan.loadFromDb();
 
+    const retry_opts = zretry.RetryOptions{
+        .io = io,
+        .retry_if = struct {
+            fn retryIf(err: anyerror) bool {
+                return utils.meta.errorSetContains(api.Client.QueryError, err);
+            }
+        }.retryIf,
+    };
+
     switch (config) {
         .serve => unreachable,
         .scan => while (true) {
-            scan.scan() catch |err| switch (err) {
+            scan.scan(retry_opts) catch |err| switch (err) {
                 error.RateLimited => {
                     const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
                     std.log.warn("rate limited; continuing in {f}", .{duration});
@@ -359,7 +369,7 @@ pub fn start(
         .watch => |watch| {
             const interval = std.Io.Duration.fromSeconds(watch.interval_s);
             while (true) {
-                scan.scan() catch |err| switch (err) {
+                scan.scan(retry_opts) catch |err| switch (err) {
                     error.RateLimited => {
                         const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
                         std.log.warn("rate limited; continuing in {f}", .{duration});
@@ -529,7 +539,7 @@ const Scan = struct {
             });
     }
 
-    pub fn scan(self: *@This()) !void {
+    pub fn scan(self: *@This(), retry_opts: zretry.RetryOptions) !void {
         for (self.repos[self.progress.repos_idx..], self.progress.repos_idx..) |repo_full, repos_idx| {
             const repo_owner, const repo_name = repo: {
                 errdefer std.log.err("malformed repository \"{s}\", must be of form \"foo/bar\"", .{repo_full});
@@ -542,14 +552,25 @@ const Scan = struct {
 
             std.log.info("/{s}/{s}: fetching repository…", .{ repo_owner, repo_name });
 
-            const repo = try api.queries.fetchRepoByFullName(self.allocator, self.client, repo_owner, repo_name);
+            const repo = try zretry.zretry(api.queries.fetchRepoByFullName, .{
+                self.allocator,
+                self.client,
+                repo_owner,
+                repo_name,
+            }, retry_opts);
             defer repo.deinit();
 
             try Db.queries.Repository.upsert.exec(self.db_conn, .{ repo.value.id, repo.value.owner.login, repo.value.name });
 
             std.log.info("/{s}/{s}: scanning for pull requests…", .{ repo_owner, repo_name });
 
-            const prs_open = try api.queries.fetchPullRequestsByRepo(self.allocator, self.client, repo.value.owner.login, repo.value.name, if (self.historical) null else &.{.OPEN});
+            const prs_open = try zretry.zretry(api.queries.fetchPullRequestsByRepo, .{
+                self.allocator,
+                self.client,
+                repo.value.owner.login,
+                repo.value.name,
+                if (self.historical) null else @as([]const api.types.PullRequestState, &.{.OPEN}),
+            }, retry_opts);
             defer prs_open.deinit();
 
             // Some PRs could have been closed since we last fetched
@@ -594,7 +615,11 @@ const Scan = struct {
 
                 try prs_db_open.deinitErr();
 
-                break :prs_closed try api.queries.fetchPullRequestsByIds(self.allocator, self.client, prs_closed_ids.items);
+                break :prs_closed try zretry.zretry(api.queries.fetchPullRequestsByIds, .{
+                    self.allocator,
+                    self.client,
+                    prs_closed_ids.items,
+                }, retry_opts);
             } else null;
             defer if (prs_closed) |pr| pr.deinit();
 
@@ -628,7 +653,11 @@ const Scan = struct {
                 for (prs[prs_start_idx..], prs_start_idx..) |pr, prs_idx| {
                     std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
 
-                    const commits = try api.queries.fetchCommitsByPullRequestId(self.allocator, self.client, pr.id);
+                    const commits = try zretry.zretry(api.queries.fetchCommitsByPullRequestId, .{
+                        self.allocator,
+                        self.client,
+                        pr.id,
+                    }, retry_opts);
                     defer commits.deinit();
 
                     const commits_start_idx = self.progress.commit.findNextLogVanished(api.types.Commit, commits.value);
@@ -639,7 +668,11 @@ const Scan = struct {
                     for (commits.value[commits_start_idx..], commits_start_idx..) |commit, commits_idx| {
                         std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
 
-                        const check_suites = try api.queries.fetchCheckSuitesByCommitId(self.allocator, self.client, commit.id);
+                        const check_suites = try zretry.zretry(api.queries.fetchCheckSuitesByCommitId, .{
+                            self.allocator,
+                            self.client,
+                            commit.id,
+                        }, retry_opts);
                         defer check_suites.deinit();
 
                         const check_suites_start_idx = self.progress.check_suite.findNextLogVanished(api.types.CheckSuite, check_suites.value);
@@ -684,7 +717,11 @@ const Scan = struct {
 
                                 std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
 
-                                const check_runs = try api.queries.fetchCheckRunsByCheckSuiteId(self.allocator, self.client, check_suite.id);
+                                const check_runs = try zretry.zretry(api.queries.fetchCheckRunsByCheckSuiteId, .{
+                                    self.allocator,
+                                    self.client,
+                                    check_suite.id,
+                                }, retry_opts);
                                 defer check_runs.deinit();
 
                                 for (check_runs.value, 0..) |check_run, check_runs_idx| {

@@ -21,8 +21,8 @@
             .hash = "zqlite_typed-0.0.0-la1GaNxZAADbP6yOMdnOlywVv3WyXNyUNwJGclgUiWZ0",
         },
         .utils = .{
-            .url = "git+https://github.com/dermetfan/utils.zig#3f7ff4ebb50f5b8ea325b02e95913e65816075ca",
-            .hash = "utils-0.0.0-5JJlDwu2AgBe9IIbfnn0hO6tac80wUzRQilNtEyUJPCB",
+            .url = "git+https://github.com/dermetfan/utils.zig#973a007fcd13977cbbac008007432e4d96aea9b5",
+            .hash = "utils-0.0.0-5JJlD2y-AgBlsms7fxAVo0-jnr2BVFX2G0d362OR4lQR",
         },
         .metrics = .{
             .url = "git+https://github.com/karlseguin/metrics.zig#1621f82e7ecf2b3dddf5730bf52761af354a7080",
@@ -31,6 +31,10 @@
         .httpz = .{
             .url = "git+https://github.com/karlseguin/http.zig#559c0134793e5878821ef00143c623d7c3060f43",
             .hash = "httpz-0.0.0-PNVzrE3kCAB5r74teciiA-zqSt3O_UGsHjkAEvG4-Yvc",
+        },
+        .zretry = .{
+            .url = "git+https://github.com/k1ngkevin/zretry#b0a026995699b6581c44961689673a579c353d51",
+            .hash = "zretry-0.3.1-LgxsskgzAABa-EqOJvh7zZ6HbdSllkLR2bzB852eRMw-",
         },
     },
     .paths = .{

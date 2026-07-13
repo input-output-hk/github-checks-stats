@@ -32,6 +32,9 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zeit", .module = b.dependency("zeit", opts).module("zeit") },
             .{ .name = "zqlite", .module = b.dependency("zqlite", opts).module("zqlite") },
             .{ .name = "zqlite-typed", .module = b.dependency("zqlite_typed", opts).module("zqlite-typed") },
+            .{ .name = "zretry", .module = b.dependency("zretry", .{
+                .target = opts.target,
+            }).module("zretry") },
         },
     });
 
