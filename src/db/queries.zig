@@ -17,6 +17,38 @@ const fmtStringEnumSet = zqlite_typed.fmt.fmtStringEnumSet;
 // GraphQL structs are specific to their query.
 const types = @import("../api.zig").types;
 
+pub const CheckState = union(enum) {
+    status: types.CheckStatusState,
+    conclusion: types.CheckConclusionState,
+
+    pub const Flat = utils.enums.Merged(&.{ types.CheckStatusState, types.CheckConclusionState }, true);
+
+    pub fn unflatten(flat: Flat) @This() {
+        return if (std.meta.stringToEnum(types.CheckStatusState, @tagName(flat))) |status|
+            .{ .status = status }
+        else if (std.meta.stringToEnum(types.CheckConclusionState, @tagName(flat))) |conclusion|
+            .{ .conclusion = conclusion }
+        else
+            unreachable;
+    }
+
+    pub fn flatten(self: @This()) Flat {
+        return switch (self) {
+            inline else => |state| switch (state) {
+                inline else => |tag| @field(Flat, @tagName(tag)),
+            },
+        };
+    }
+
+    pub fn fromZqlite(_: std.mem.Allocator, cell: []const u8) !@This() {
+        return unflatten(std.meta.stringToEnum(Flat, cell) orelse return error.InvalidTag);
+    }
+
+    pub fn toZqlite(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+        return try std.fmt.allocPrint(allocator, "{f}", .{self});
+    }
+};
+
 pub const Repository = struct {
     id: types.Id,
     owner: []const u8,
@@ -38,7 +70,7 @@ pub const PullRequest = struct {
     id: types.Id,
     repository: types.Id,
     number: types.Int,
-    state: []const u8, // TODO make this typed?
+    state: types.PullRequestState,
 
     const table = "pull_request";
 
@@ -123,10 +155,10 @@ pub const CheckSuite = struct {
     repository: types.Id,
     commit: types.Id,
     app: types.Id,
-    created_at: []const u8, // TODO make this typed?
-    updated_at: []const u8, // TODO make this typed?
-    status: []const u8, // TODO make this typed?
-    conclusion: ?[]const u8, // TODO make this typed?
+    created_at: types.DateTime,
+    updated_at: types.DateTime,
+    status: types.CheckStatusState,
+    conclusion: ?types.CheckConclusionState,
 
     const table = "check_suite";
 
@@ -144,11 +176,11 @@ pub const CheckRun = struct {
     id: types.Id,
     suite: types.Id,
     name: []const u8,
-    started_at: []const u8, // TODO make this typed?
-    completed_at: ?[]const u8, // TODO make this typed?
+    started_at: types.DateTime,
+    completed_at: ?types.DateTime,
     external_id: ?[]const u8,
-    status: []const u8, // TODO make this typed?
-    conclusion: ?[]const u8, // TODO make this typed?
+    status: types.CheckStatusState,
+    conclusion: ?types.CheckConclusionState,
 
     const table = "check_run";
 
@@ -163,15 +195,14 @@ pub const CheckRun = struct {
 };
 
 pub const Scan = struct {
-    /// tab-separated list
-    repos: []const u8,
+    repos: SeparatedStrings('\t'),
     historical: bool,
     repos_idx: i64,
     prss_idx: i64,
     pr: ?types.Id,
     commit: ?types.Id,
     check_suite: ?types.Id,
-    updated_at: []const u8, // TODO make this typed?
+    updated_at: types.DateTime,
 
     const table = "scan";
 
@@ -199,15 +230,37 @@ pub const Scan = struct {
     pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
         return SimpleSelectBy(table, @This(), columns, .initMany(&.{ .repos, .historical }));
     }
-
-    pub fn encodeRepos(allocator: std.mem.Allocator, repos: []const []const u8) std.mem.Allocator.Error![]u8 {
-        return std.mem.join(allocator, "\t", repos);
-    }
-
-    pub fn decodeRepos(repos: []const u8) std.mem.SplitIterator(u8, .scalar) {
-        return std.mem.splitScalar(u8, repos, '\t');
-    }
 };
+
+fn SeparatedStrings(separator: u8) type {
+    return struct {
+        items: []const []const u8,
+
+        pub fn fromZqlite(allocator: std.mem.Allocator, cell: []const u8) !@This() {
+            var iter = std.mem.splitScalar(u8, cell, separator);
+
+            var items = try std.ArrayList([]const u8).initCapacity(allocator, count: {
+                var count: usize = 0;
+                while (iter.next()) |_|
+                    count += 1;
+                iter.reset();
+                break :count count;
+            });
+
+            errdefer for (items.items) |item|
+                allocator.free(item);
+
+            while (iter.next()) |item|
+                items.appendAssumeCapacity(try allocator.dupe(u8, item));
+
+            return .{ .items = items };
+        }
+
+        pub fn toZqlite(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
+            return std.mem.join(allocator, &.{separator}, self.items);
+        }
+    };
+}
 
 pub const pullRequestCountGroupedByRepoAndState = Query(
     std.fmt.comptimePrint(
@@ -271,14 +324,14 @@ pub const checkRunCountGroupedByAppAndRepoAndState = Query(
     struct {
         app_slug: @FieldType(App, "slug"),
         repo: []const u8,
-        state: []const u8,
+        state: CheckState,
         count: i64,
     },
     @Tuple(&.{}),
 );
 
 pub const TimeToFixCursor = struct {
-    fixed_at: ?[]const u8 = null,
+    fixed_at: ?types.DateTime = null,
     repo_id: ?types.Id = null,
     app_id: ?types.Id = null,
     check_run_name: ?[]const u8 = null,
@@ -287,16 +340,12 @@ pub const TimeToFixCursor = struct {
     pub const Tuple = utils.meta.FieldsTuple(@This());
 
     pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
-        if (self.fixed_at) |fixed_at| allocator.free(fixed_at);
         if (self.repo_id) |repo_id| allocator.free(repo_id);
         if (self.app_id) |app_id| allocator.free(app_id);
         if (self.check_run_name) |check_run_name| allocator.free(check_run_name);
     }
 
     pub fn dupe(self: @This(), allocator: std.mem.Allocator) std.mem.Allocator.Error!@This() {
-        const fixed_at = if (self.fixed_at) |fixed_at| try allocator.dupe(u8, fixed_at) else null;
-        errdefer if (fixed_at) |at| allocator.free(at);
-
         const repo_id = if (self.repo_id) |repo_id| try allocator.dupe(u8, repo_id) else null;
         errdefer if (repo_id) |id| allocator.free(id);
 
@@ -307,7 +356,7 @@ pub const TimeToFixCursor = struct {
         errdefer if (check_run_name) |name| allocator.free(name);
 
         return .{
-            .fixed_at = fixed_at,
+            .fixed_at = self.fixed_at,
             .repo_id = repo_id,
             .app_id = app_id,
             .check_run_name = check_run_name,
@@ -427,8 +476,8 @@ pub const timeToFix = Query(
         app_slug: []const u8,
         check_run_name: []const u8,
         cycle: i64,
-        broken_at: []const u8,
-        fixed_at: []const u8,
+        broken_at: types.DateTime,
+        fixed_at: types.DateTime,
         broken_duration_seconds: i64,
     },
     TimeToFixCursor.Tuple,
