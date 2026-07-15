@@ -4,12 +4,13 @@ const m = @import("metrics");
 const utils = @import("utils");
 
 const types = @import("api.zig").types;
+const db_queries = @import("Db.zig").queries;
 
 pull_requests: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.Repo, struct {
     state: types.PullRequestState,
 } })),
 check_runs: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, struct {
-    state: CheckState,
+    state: db_queries.CheckState.Flat,
 } })),
 pull_request_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo }), &.{
     5 * std.time.s_per_min,
@@ -35,8 +36,6 @@ const Labels = struct {
     pub const App = struct { app: types.Id };
     pub const Repo = struct { repo: []const u8 };
 };
-
-pub const CheckState = utils.enums.Merged(&.{ types.CheckConclusionState, types.CheckStatusState }, true);
 
 pub fn deinit(self: *@This()) void {
     self.pull_requests.deinit();
@@ -86,14 +85,14 @@ pub const Scrape = struct {
         defer self.mutex.unlock(io);
 
         {
-            var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(db_conn, .{});
+            var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(arena, db_conn, .{});
             errdefer rows.deinit();
 
             while (try rows.next(arena)) |row| {
                 defer zqlite_typed.freeStructFromRow(@TypeOf(row), arena, row);
                 try metrics.pull_requests.set(.{
                     .repo = row.repo,
-                    .state = std.meta.stringToEnum(types.PullRequestState, row.state).?,
+                    .state = row.state,
                 }, @intCast(row.count));
             }
 
@@ -101,7 +100,7 @@ pub const Scrape = struct {
         }
 
         {
-            var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(db_conn, .{});
+            var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(arena, db_conn, .{});
             errdefer rows.deinit();
 
             while (try rows.next(arena)) |row| {
@@ -109,7 +108,7 @@ pub const Scrape = struct {
                 try metrics.check_runs.set(.{
                     .app = row.app_slug,
                     .repo = row.repo,
-                    .state = std.meta.stringToEnum(Metrics.CheckState, row.state).?,
+                    .state = row.state.flatten(),
                 }, @intCast(row.count));
             }
 
@@ -117,7 +116,7 @@ pub const Scrape = struct {
         }
 
         {
-            var rows = try Db.queries.timeToFix.queryIterator(db_conn, self.time_to_fix_cursor.tuple());
+            var rows = try Db.queries.timeToFix.queryIterator(arena, db_conn, self.time_to_fix_cursor.tuple());
             errdefer rows.deinit();
 
             while (try rows.next(arena)) |row| {

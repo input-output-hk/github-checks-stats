@@ -227,7 +227,7 @@ pub fn start(
     switch (config) {
         .serve => {},
         inline .scan, .watch => |mode| if (mode.scan_expiry_s) |scan_expiry_s|
-            try Db.queries.Scan.delete_expired.exec(db_conn, .{scan_expiry_s}),
+            try Db.queries.Scan.delete_expired.exec(allocator, db_conn, .{scan_expiry_s}),
     }
 
     var metrics = if (switch (config) {
@@ -431,9 +431,6 @@ const Scan = struct {
     }
 
     pub fn loadFromDb(self: *@This(), db_conn: zqlite.Conn) !void {
-        const db_repos = try Db.queries.Scan.encodeRepos(self.allocator, self.repos);
-        defer self.allocator.free(db_repos);
-
         if (try Db.queries.Scan.SelectById(.initMany(&.{
             .repos_idx,
             .prss_idx,
@@ -442,7 +439,7 @@ const Scan = struct {
             .check_suite,
             .updated_at,
         })).query(self.allocator, db_conn, .{
-            db_repos,
+            .{ .items = self.repos },
             self.historical,
         })) |db_scan| {
             self.progress.repos_idx = @intCast(db_scan.repos_idx);
@@ -452,9 +449,7 @@ const Scan = struct {
             const optimized = true;
 
             defer if (optimized) {
-                // Do not free `db_scan` entirely because we move ownership of some of its allocated fields into `scan`.
-                // Only free the remaining ones.
-                self.allocator.free(db_scan.updated_at);
+                // Do not free `db_scan` because we move ownership of all of its allocated fields into `scan`.
             } else zqlite_typed.freeStructFromRow(@TypeOf(db_scan), self.allocator, db_scan);
 
             inline for (.{ "pr", "commit", "check_suite" }) |field| {
@@ -470,7 +465,7 @@ const Scan = struct {
                     anchor.clear(self.allocator);
             }
 
-            std.log.info("continuing interrupted scan from {s} at repo={d}/{d} prs_batch={d} pr={?s} commit={?s} check_suite={?s}", .{
+            std.log.info("continuing interrupted scan from {f} at repo={d}/{d} prs_batch={d} pr={?s} commit={?s} check_suite={?s}", .{
                 db_scan.updated_at,
                 self.progress.repos_idx + 1,
                 self.repos.len,
@@ -483,21 +478,18 @@ const Scan = struct {
     }
 
     fn persist(self: @This(), db_conn: zqlite.Conn) !void {
-        const db_repos = try Db.queries.Scan.encodeRepos(self.allocator, self.repos);
-        defer self.allocator.free(db_repos);
-
         if (self.progress.repos_idx == 0 and
             self.progress.prss_idx == 0 and
             self.progress.pr.id == null and
             self.progress.commit.id == null and
             self.progress.check_suite.id == null)
-            try Db.queries.Scan.delete.exec(db_conn, .{
-                db_repos,
+            try Db.queries.Scan.delete.exec(self.allocator, db_conn, .{
+                .{ .items = self.repos },
                 self.historical,
             })
         else
-            try Db.queries.Scan.upsert.exec(db_conn, .{
-                db_repos,
+            try Db.queries.Scan.upsert.exec(self.allocator, db_conn, .{
+                .{ .items = self.repos },
                 self.historical,
                 @intCast(self.progress.repos_idx),
                 @intCast(self.progress.prss_idx),
@@ -528,7 +520,7 @@ const Scan = struct {
             }, retry_opts);
             defer repo.deinit();
 
-            try Db.queries.Repository.upsert.exec(db_conn, .{ repo.value.id, repo.value.owner.login, repo.value.name });
+            try Db.queries.Repository.upsert.exec(self.allocator, db_conn, .{ repo.value.id, repo.value.owner.login, repo.value.name });
 
             std.log.info("/{s}/{s}: scanning for pull requests…", .{ repo_owner, repo_name });
 
@@ -549,7 +541,7 @@ const Scan = struct {
                 var prs_db_open = try Db.queries.PullRequest.SelectByRepoAndStates(
                     .initOne(.id),
                     .initOne(.OPEN),
-                ).queryIterator(db_conn, .{
+                ).queryIterator(self.allocator, db_conn, .{
                     repo.value.owner.login,
                     repo.value.name,
                 });
@@ -599,7 +591,7 @@ const Scan = struct {
             for (prss[self.progress.prss_idx..]) |prs| {
                 const prs_start_idx = if (self.progress.pr.find(api.types.PullRequest, prs)) |idx| idx + 1 else 0;
                 for (prs[prs_start_idx..]) |pr|
-                    try Db.queries.PullRequest.upsert.exec(db_conn, .{ pr.id, repo.value.id, pr.number, @tagName(pr.state) });
+                    try Db.queries.PullRequest.upsert.exec(self.allocator, db_conn, .{ pr.id, repo.value.id, pr.number, pr.state });
             }
 
             const prs_count = prs_count: {
@@ -631,7 +623,7 @@ const Scan = struct {
                     const commits_start_idx = self.progress.commit.findNextLogVanished(api.types.Commit, commits.value);
 
                     for (commits.value[commits_start_idx..]) |commit|
-                        try Db.queries.Commit.upsert.exec(db_conn, .{ commit.id, commit.oid });
+                        try Db.queries.Commit.upsert.exec(self.allocator, db_conn, .{ commit.id, commit.oid });
 
                     for (commits.value[commits_start_idx..], commits_start_idx..) |commit, commits_idx| {
                         std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
@@ -647,41 +639,29 @@ const Scan = struct {
                         for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
                             const scan_check_runs =
                                 self.historical or
-                                if (try Db.queries.CheckSuite.SelectById(.initMany(&.{ .updated_at })).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| scan_check_runs: {
+                                if (try Db.queries.CheckSuite.SelectById(.initMany(&.{.updated_at})).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| scan_check_runs: {
                                     defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
 
-                                    const db_check_suite_updated_at = try zeit.Time.fromISO8601(db_check_suite.updated_at);
-                                    break :scan_check_runs check_suite.updatedAt.inner.compare(db_check_suite_updated_at) != .equal;
+                                    break :scan_check_runs check_suite.updatedAt.inner.compare(db_check_suite.updated_at.inner) != .equal;
                                 } else true;
 
                             if (scan_check_runs) {
-                                try Db.queries.App.upsert.exec(db_conn, .{
+                                try Db.queries.App.upsert.exec(self.allocator, db_conn, .{
                                     check_suite.app.id,
                                     check_suite.app.slug,
                                     check_suite.app.name,
                                 });
 
-                                {
-                                    const created_at = try std.fmt.allocPrint(self.allocator, "{f}", .{check_suite.createdAt});
-                                    defer self.allocator.free(created_at);
-
-                                    const updated_at = try std.fmt.allocPrint(self.allocator, "{f}", .{check_suite.updatedAt});
-                                    defer self.allocator.free(updated_at);
-
-                                    const status = try std.fmt.allocPrint(self.allocator, "{f}", .{check_suite.status});
-                                    defer self.allocator.free(status);
-
-                                    try Db.queries.CheckSuite.upsert.exec(db_conn, .{
-                                        check_suite.id,
-                                        repo.value.id,
-                                        commit.id,
-                                        check_suite.app.id,
-                                        created_at,
-                                        updated_at,
-                                        status,
-                                        if (check_suite.conclusion) |c| @tagName(c) else null,
-                                    });
-                                }
+                                try Db.queries.CheckSuite.upsert.exec(self.allocator, db_conn, .{
+                                    check_suite.id,
+                                    repo.value.id,
+                                    commit.id,
+                                    check_suite.app.id,
+                                    check_suite.createdAt,
+                                    check_suite.updatedAt,
+                                    check_suite.status,
+                                    check_suite.conclusion,
+                                });
 
                                 std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
 
@@ -693,21 +673,15 @@ const Scan = struct {
                                 defer check_runs.deinit();
 
                                 for (check_runs.value, 0..) |check_run, check_runs_idx| {
-                                    const started_at = try std.fmt.allocPrint(self.allocator, "{f}", .{check_run.startedAt});
-                                    defer self.allocator.free(started_at);
-
-                                    const completed_at = if (check_run.completedAt) |c| try std.fmt.allocPrint(self.allocator, "{f}", .{c}) else null;
-                                    defer if (completed_at) |c| self.allocator.free(c);
-
-                                    try Db.queries.CheckRun.upsert.exec(db_conn, .{
+                                    try Db.queries.CheckRun.upsert.exec(self.allocator, db_conn, .{
                                         check_run.id,
                                         check_suite.id,
                                         check_run.name,
-                                        started_at,
-                                        completed_at,
+                                        check_run.startedAt,
+                                        check_run.completedAt,
                                         check_run.externalId,
-                                        @tagName(check_run.status),
-                                        if (check_run.conclusion) |c| @tagName(c) else null,
+                                        check_run.status,
+                                        check_run.conclusion,
                                     });
 
                                     std.log.info("{s}: {d}/{d} check runs scanned", .{ check_suite.resourcePath, check_runs_idx + 1, check_runs.value.len });
