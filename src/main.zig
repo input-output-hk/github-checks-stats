@@ -316,7 +316,11 @@ pub fn start(
         .io = io,
         .retry_if = struct {
             fn retryIf(err: anyerror) bool {
-                return utils.meta.errorSetContains(api.Client.QueryError, err);
+                if (utils.meta.errorSetContains(api.Client.QueryError, err)) {
+                    std.log.warn("error during API request, retrying after a delay: {s}", .{@errorName(err)});
+                    return true;
+                }
+                return false;
             }
         }.retryIf,
     };
