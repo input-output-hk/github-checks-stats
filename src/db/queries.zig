@@ -334,7 +334,6 @@ pub const TimeToFixCursor = struct {
     fixed_at: ?types.DateTime = null,
     repo_id: ?types.Id = null,
     app_id: ?types.Id = null,
-    check_run_name: ?[]const u8 = null,
     cycle: ?i64 = null,
 
     pub const Tuple = utils.meta.FieldsTuple(@This());
@@ -342,7 +341,6 @@ pub const TimeToFixCursor = struct {
     pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
         if (self.repo_id) |repo_id| allocator.free(repo_id);
         if (self.app_id) |app_id| allocator.free(app_id);
-        if (self.check_run_name) |check_run_name| allocator.free(check_run_name);
     }
 
     pub fn dupe(self: @This(), allocator: std.mem.Allocator) std.mem.Allocator.Error!@This() {
@@ -352,14 +350,10 @@ pub const TimeToFixCursor = struct {
         const app_id = if (self.app_id) |app_id| try allocator.dupe(u8, app_id) else null;
         errdefer if (app_id) |id| allocator.free(id);
 
-        const check_run_name = if (self.check_run_name) |check_run_name| try allocator.dupe(u8, check_run_name) else null;
-        errdefer if (check_run_name) |name| allocator.free(name);
-
         return .{
             .fixed_at = self.fixed_at,
             .repo_id = repo_id,
             .app_id = app_id,
-            .check_run_name = check_run_name,
             .cycle = self.cycle,
         };
     }
@@ -369,7 +363,6 @@ pub const TimeToFixCursor = struct {
             self.fixed_at,
             self.repo_id,
             self.app_id,
-            self.check_run_name,
             self.cycle,
         };
     }
@@ -377,79 +370,96 @@ pub const TimeToFixCursor = struct {
 
 pub const timeToFix = Query(
     std.fmt.comptimePrint(
-        \\WITH outcomes AS (
-        \\  SELECT
-        \\    cs.{[cs_repository]f}   AS repository,
-        \\    cs.{[cs_app]f}          AS app,
-        \\    cr.{[cr_name]f}         AS name,
-        \\    cr.{[cr_completed_at]f} AS completed_at,
-        \\    cr.{[cr_conclusion]f}   AS conclusion
-        \\  FROM {[cr]f} cr
-        \\  JOIN {[cs]f} cs ON cs.{[cs_id]f} = cr.{[cr_suite]f}
-        \\  WHERE
-        \\    cr.{[cr_status]f} = {[cr_status_COMPLETED]f}
-        \\    AND cr.{[cr_completed_at]f} IS NOT NULL
-        \\    AND cr.{[cr_conclusion]f} IN (
-        \\      {[cr_conclusion_FAILURE]f},
-        \\      {[cr_conclusion_CANCELLED]f},
-        \\      {[cr_conclusion_TIMED_OUT]f},
-        \\      {[cr_conclusion_STARTUP_FAILURE]f},
-        \\      {[cr_conclusion_SUCCESS]f}
-        \\    )
+        \\WITH
+        \\  ranked_runs AS (
+        \\    SELECT
+        \\      cs.{[cs_repository]f}   AS repository,
+        \\      cs.{[cs_app]f}          AS app,
+        \\      cs.{[cs_commit]f}       AS commit_id,
+        \\      cr.{[cr_conclusion]f}   AS conclusion,
+        \\      cr.{[cr_completed_at]f} AS completed_at,
+        \\      row_number() OVER (
+        \\        PARTITION BY cs.{[cs_repository]f}, cs.{[cs_app]f}, cs.{[cs_commit]f}, cr.{[cr_name]f}
+        \\        ORDER BY cr.{[cr_completed_at]f} DESC
+        \\      ) AS rn
+        \\    FROM {[cr]f} cr
+        \\    JOIN {[cs]f} cs ON cs.{[cs_id]f} = cr.{[cr_suite]f}
+        \\    WHERE
+        \\      cr.{[cr_status]f} = {[cr_status_COMPLETED]f}
+        \\      AND cr.{[cr_completed_at]f} IS NOT NULL
+        \\      AND cr.{[cr_conclusion]f} IN (
+        \\        {[cr_conclusion_FAILURE]f},
+        \\        {[cr_conclusion_CANCELLED]f},
+        \\        {[cr_conclusion_TIMED_OUT]f},
+        \\        {[cr_conclusion_STARTUP_FAILURE]f},
+        \\        {[cr_conclusion_SUCCESS]f}
+        \\      )
         \\  ),
-        \\tagged AS (
-        \\  SELECT
-        \\    *,
-        \\    sum(CASE WHEN conclusion = {[cr_conclusion_SUCCESS]f} THEN 1 ELSE 0 END) OVER (
-        \\      PARTITION BY repository, app, name
-        \\      ORDER BY completed_at
-        \\      ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
-        \\    ) AS cycle
-        \\  FROM outcomes
-        \\),
-        \\cycles AS (
-        \\  SELECT
-        \\    repository,
-        \\    app,
-        \\    name,
-        \\    cycle,
-        \\    min(CASE WHEN conclusion != {[cr_conclusion_SUCCESS]f} THEN completed_at END) AS first_fail_at,
-        \\    min(CASE WHEN conclusion  = {[cr_conclusion_SUCCESS]f} THEN completed_at END) AS success_at
-        \\  FROM tagged
-        \\  GROUP BY repository, app, name, cycle
-        \\)
+        \\  commit_outcomes AS (
+        \\    SELECT
+        \\      repository,
+        \\      app,
+        \\      commit_id,
+        \\      max(completed_at) AS at,
+        \\      CASE
+        \\        WHEN sum(CASE WHEN conclusion != {[cr_conclusion_SUCCESS]f} THEN 1 ELSE 0 END) > 0 THEN 'BROKEN'
+        \\        ELSE 'FIXED'
+        \\      END AS state
+        \\    FROM ranked_runs
+        \\    WHERE rn = 1
+        \\    GROUP BY repository, app, commit_id
+        \\  ),
+        \\  tagged AS (
+        \\    SELECT
+        \\      *,
+        \\      sum(CASE WHEN state = 'FIXED' THEN 1 ELSE 0 END) OVER (
+        \\        PARTITION BY repository, app
+        \\        ORDER BY at
+        \\        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        \\      ) AS cycle
+        \\    FROM commit_outcomes
+        \\  ),
+        \\  cycles AS (
+        \\    SELECT
+        \\      repository,
+        \\      app,
+        \\      cycle,
+        \\      min(CASE WHEN state != 'FIXED' THEN at END) AS broken_at,
+        \\      min(CASE WHEN state  = 'FIXED' THEN at END) AS success_at
+        \\    FROM tagged
+        \\    GROUP BY repository, app, cycle
+        \\  )
         \\SELECT
-        \\  r.id                                                             AS repo_id,
-        \\  r.owner || '/' || r.name                                         AS repo_full,
-        \\  a.id                                                             AS app_id,
-        \\  a.slug                                                           AS app_slug,
-        \\  c.name                                                           AS check_run_name,
+        \\  r.id                     AS repo_id,
+        \\  r.owner || '/' || r.name AS repo_full,
+        \\  a.id                     AS app_id,
+        \\  a.slug                   AS app_slug,
         \\  c.cycle,
-        \\  c.first_fail_at,
+        \\  c.broken_at,
         \\  c.success_at,
         \\  cast(
-        \\    (julianday(c.success_at) - julianday(c.first_fail_at)) * {[s_per_day]d}
+        \\    (julianday(c.success_at) - julianday(c.broken_at)) * {[s_per_day]d}
         \\    AS INTEGER
-        \\  )                                                                AS broken_duration_seconds
+        \\  )                        AS broken_duration_seconds
         \\FROM cycles c
         \\JOIN {[repo]f} r ON r.id = c.repository
         \\JOIN {[app]f}  a ON a.id = c.app
         \\WHERE
-        \\  c.first_fail_at IS NOT NULL
+        \\  c.broken_at IS NOT NULL
         \\  AND c.success_at IS NOT NULL
-        \\  AND (c.success_at, r.{[repo_id]f}, a.{[app_id]f}, c.name, c.cycle) > (
+        \\  AND (c.success_at, r.{[repo_id]f}, a.{[app_id]f}, c.cycle) > (
         \\    CASE WHEN ?1 IS NULL THEN '' ELSE ?1 END,
         \\    CASE WHEN ?2 IS NULL THEN '' ELSE ?2 END,
         \\    CASE WHEN ?3 IS NULL THEN '' ELSE ?3 END,
-        \\    CASE WHEN ?4 IS NULL THEN '' ELSE ?4 END,
-        \\    CASE WHEN ?5 IS NULL THEN -1 ELSE ?5 END
+        \\    CASE WHEN ?4 IS NULL THEN -1 ELSE ?4 END
         \\  ) -- cursor
-        \\ORDER BY c.success_at, r.{[repo_id]f}, a.{[app_id]f}, c.name, c.cycle -- cursor
+        \\ORDER BY c.success_at, r.{[repo_id]f}, a.{[app_id]f}, c.cycle -- cursor
     , .{
         .cs = fmtIdentifier(CheckSuite.table),
         .cs_id = fmtIdentifier(@tagName(CheckSuite.Column.id)),
         .cs_repository = fmtIdentifier(@tagName(CheckSuite.Column.repository)),
         .cs_app = fmtIdentifier(@tagName(CheckSuite.Column.app)),
+        .cs_commit = fmtIdentifier(@tagName(CheckSuite.Column.commit)),
         .cr = fmtIdentifier(CheckRun.table),
         .cr_suite = fmtIdentifier(@tagName(CheckRun.Column.suite)),
         .cr_name = fmtIdentifier(@tagName(CheckRun.Column.name)),
@@ -474,7 +484,6 @@ pub const timeToFix = Query(
         repo_full: []const u8,
         app_id: types.Id,
         app_slug: []const u8,
-        check_run_name: []const u8,
         cycle: i64,
         broken_at: types.DateTime,
         fixed_at: types.DateTime,
