@@ -126,7 +126,6 @@ pub const Scrape = struct {
                     .fixed_at = row.fixed_at,
                     .repo_id = row.repo_id,
                     .app_id = row.app_id,
-                    .check_run_name = row.check_run_name,
                     .cycle = row.cycle,
                 }).dupe(self.allocator);
                 errdefer new_cursor.deinit(self.allocator);
