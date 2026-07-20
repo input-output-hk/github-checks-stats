@@ -131,6 +131,10 @@ pub const Commit = struct {
     pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
         return SimpleSelectBy(table, @This(), columns, .initOne(.id));
     }
+
+    pub fn SelectByOid(columns: std.enums.EnumSet(Column)) type {
+        return SimpleSelectBy(table, @This(), columns, .initOne(.oid));
+    }
 };
 
 pub const App = struct {
@@ -202,6 +206,7 @@ pub const Scan = struct {
     pr: ?types.Id,
     commit: ?types.Id,
     check_suite: ?types.Id,
+    default_branch_commit: ?types.Id,
     updated_at: types.DateTime,
 
     const table = "scan";

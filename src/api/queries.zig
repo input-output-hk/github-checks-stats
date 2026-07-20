@@ -262,6 +262,124 @@ pub fn fetchCommitsByPullRequestId(allocator: std.mem.Allocator, client: *Client
     return cloned;
 }
 
+pub fn fetchCommitHistoryByRepo(
+    allocator: std.mem.Allocator,
+    client: *Client,
+    repo_id: types.Id,
+    head_oid: []const u8,
+    stop_oids: []const []const u8,
+    max_commits: ?usize,
+) !Cloned([]const types.Commit) {
+    var cloned = try Cloned([]const types.Commit).init(allocator);
+    errdefer cloned.deinit();
+    const cloned_allocator = cloned.arena.allocator();
+
+    var commits = std.ArrayList(types.Commit).empty;
+
+    const Ctx = struct {
+        client: *Client,
+
+        cloned_allocator: std.mem.Allocator,
+        commits: *std.ArrayList(types.Commit),
+
+        repo_id: types.Id,
+        head_oid: []const u8,
+        stop_oids: []const []const u8,
+        max_commits: ?usize,
+
+        const Error = Client.QueryError;
+        const Page = Client.PageInfo(.forward);
+
+        fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
+            const payload = try std.json.Stringify.valueAlloc(page_allocator, .{
+                .query = "" ++
+                    \\query(
+                    \\  $repo_id: ID!
+                    \\  $head_oid: GitObjectID!
+                    \\  $cursor: String
+                    \\) {
+                    \\  node(id: $repo_id) {
+                    \\    ... on Repository {
+                    \\      object(oid: $head_oid) {
+                    \\        ... on Commit {
+                    \\          history(
+                ++ std.fmt.comptimePrint("first: {d}\n", .{api.page_size}) ++
+                    \\            after: $cursor
+                    \\          ) {
+                ++ Page.gql ++
+                    \\            nodes
+                ++ " " ++ comptime api.graphqlPretty(types.Commit, "  ", 6) ++ "\n" ++
+                    \\          }
+                    \\        }
+                    \\      }
+                    \\    }
+                    \\  }
+                    \\}
+                ,
+                .variables = .{
+                    .repo_id = ctx.repo_id,
+                    .head_oid = ctx.head_oid,
+                    .cursor = if (page) |p| p.followingCursor() else null,
+                },
+            }, .{});
+            defer page_allocator.free(payload);
+
+            const response = try ctx.client.query(page_allocator, struct {
+                node: struct {
+                    object: struct {
+                        history: struct {
+                            pageInfo: Page,
+                            nodes: []const types.Commit,
+                        },
+                    },
+                },
+            }, payload);
+            defer response.deinit();
+
+            const history = response.value.node.object.history;
+
+            var page_info = history.pageInfo;
+            page_info.hasNextPage = false;
+
+            var take: usize = 0;
+            for (history.nodes) |node| {
+                if (ctx.max_commits) |max| {
+                    if (take == max) break;
+                } else for (ctx.stop_oids) |stop_oid|
+                    if (std.mem.eql(u8, node.oid, stop_oid)) break;
+
+                take += 1;
+            } else page_info.hasNextPage = history.pageInfo.hasNextPage;
+
+            try ctx.commits.ensureUnusedCapacity(ctx.cloned_allocator, take);
+            for (history.nodes[0..take]) |node|
+                ctx.commits.addOneAssumeCapacity().* = try cloneLeaky(ctx.cloned_allocator, node);
+
+            return clone(page_allocator, page_info);
+        }
+    };
+
+    try Client.paginate(
+        allocator,
+        Ctx,
+        Ctx.Error,
+        Ctx.Page.direction,
+        Ctx.queryPage,
+        .{
+            .client = client,
+            .cloned_allocator = cloned_allocator,
+            .commits = &commits,
+            .repo_id = repo_id,
+            .head_oid = head_oid,
+            .stop_oids = stop_oids,
+            .max_commits = max_commits,
+        },
+    );
+
+    cloned.value = try commits.toOwnedSlice(cloned_allocator);
+    return cloned;
+}
+
 pub fn fetchCheckSuitesByCommitId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const types.CheckSuite) {
     var cloned = try Cloned([]const types.CheckSuite).init(allocator);
     errdefer cloned.deinit();

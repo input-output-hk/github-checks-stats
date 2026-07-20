@@ -63,6 +63,7 @@ pub const Repository = struct {
     id: Id,
     owner: RepositoryOwner,
     name: []const u8,
+    defaultBranchRef: ?Ref = null,
 };
 
 pub const PullRequestState = enum {
@@ -92,6 +93,11 @@ pub const PullRequest = struct {
     state: PullRequestState,
 };
 
+pub const GitObject = struct {
+    id: Id,
+    oid: []const u8,
+};
+
 pub const Commit = struct {
     id: Id,
     resourcePath: []const u8,
@@ -107,8 +113,10 @@ pub const App = struct {
 };
 
 pub const Ref = struct {
+    id: Id,
     prefix: []const u8,
     name: []const u8,
+    target: GitObject,
 };
 
 pub const User = struct {

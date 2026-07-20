@@ -37,6 +37,7 @@ pub fn main(init: std.process.Init) !void {
                 .@"user-agent" = "User-Agent header to send, may be needed to authenticate as a GitHub App",
                 .@"token-file" = "file to read a token from to authorize with",
                 .historical = "scan only closed instead of open PRs (default: true in scan mode, false otherwise)",
+                .@"history-limit" = std.fmt.comptimePrint("max depth of commits to walk when scanning the default branch (default: {d})", .{std.meta.fieldInfo(Config.Scan, .history_limit).defaultValue().?}),
                 .@"metrics-listen" = "listen address and port or unix domain socket after `unix:` prefix to bind for metrics",
             },
         };
@@ -57,6 +58,7 @@ pub fn main(init: std.process.Init) !void {
             @"user-agent": @FieldType(Config.Scan, "user_agent") = std.meta.fieldInfo(Config.Scan, .user_agent).defaultValue().?,
             @"token-file": @FieldType(Config.Scan, "token_file") = std.meta.fieldInfo(Config.Scan, .token_file).defaultValue().?,
             historical: ?@FieldType(Config.Scan, "historical") = std.meta.fieldInfo(Config.Scan, .historical).defaultValue(),
+            @"history-limit": @FieldType(Config.Scan, "history_limit") = std.meta.fieldInfo(Config.Scan, .history_limit).defaultValue().?,
             @"metrics-listen": @FieldType(Config.Scan, "metrics_listen") = std.meta.fieldInfo(Config.Scan, .metrics_listen).defaultValue().?,
 
             pub const meta = .{
@@ -68,6 +70,7 @@ pub fn main(init: std.process.Init) !void {
             @"user-agent": @FieldType(Config.Watch, "user_agent") = std.meta.fieldInfo(Config.Watch, .user_agent).defaultValue().?,
             @"token-file": @FieldType(Config.Watch, "token_file") = std.meta.fieldInfo(Config.Watch, .token_file).defaultValue().?,
             historical: ?@FieldType(Config.Watch, "historical") = std.meta.fieldInfo(Config.Watch, .historical).defaultValue(),
+            @"history-limit": @FieldType(Config.Watch, "history_limit") = std.meta.fieldInfo(Config.Watch, .history_limit).defaultValue().?,
             @"metrics-listen": @FieldType(Config.Watch, "metrics_listen") = std.meta.fieldInfo(Config.Watch, .metrics_listen).defaultValue().?,
 
             interval: @FieldType(Config.Watch, "interval_s") = std.meta.fieldInfo(Config.Watch, .interval_s).defaultValue().?,
@@ -78,6 +81,7 @@ pub fn main(init: std.process.Init) !void {
                     .@"user-agent" = Options.meta_common.option_docs.@"user-agent",
                     .@"token-file" = Options.meta_common.option_docs.@"token-file",
                     .historical = Options.meta_common.option_docs.historical,
+                    .@"history-limit" = Options.meta_common.option_docs.@"history-limit",
                     .@"metrics-listen" = Options.meta_common.option_docs.@"metrics-listen",
 
                     .interval = std.fmt.comptimePrint("seconds to sleep between iterations (default: {d})", .{std.meta.fieldInfo(@This(), .interval).defaultValue().?}),
@@ -141,6 +145,7 @@ pub fn main(init: std.process.Init) !void {
             .user_agent = scan.@"user-agent",
             .token_file = scan.@"token-file",
             .historical = scan.historical orelse true,
+            .history_limit = scan.@"history-limit",
             .metrics_listen = scan.@"metrics-listen",
             .repos = options.positionals,
         } },
@@ -150,6 +155,7 @@ pub fn main(init: std.process.Init) !void {
             .user_agent = watch.@"user-agent",
             .token_file = watch.@"token-file",
             .historical = watch.historical orelse false,
+            .history_limit = watch.@"history-limit",
             .metrics_listen = watch.@"metrics-listen",
             .repos = options.positionals,
             .interval_s = watch.interval,
@@ -176,6 +182,7 @@ pub const Config = union(enum) {
             user_agent: ?[]const u8 = null,
             token_file: ?[]const u8 = null,
             historical: bool,
+            history_limit: u32 = 250,
             metrics_listen: ?[]const u8 = null,
             repos: []const []const u8,
         },
@@ -305,7 +312,11 @@ pub fn start(
         },
         .historical = switch (config) {
             .serve => unreachable,
-            inline else => |mode| mode.historical,
+            inline .scan, .watch => |mode| mode.historical,
+        },
+        .history_limit = switch (config) {
+            .serve => unreachable,
+            inline .scan, .watch => |mode| mode.history_limit,
         },
     };
     defer scan.deinit();
@@ -364,6 +375,7 @@ const Scan = struct {
 
     repos: []const []const u8,
     historical: bool,
+    history_limit: u32,
 
     progress: Progress = .{},
 
@@ -372,10 +384,11 @@ const Scan = struct {
         prss_idx: usize = 0,
         pr: Anchor = .{},
         commit: Anchor = .{},
+        default_branch_commit: Anchor = .{},
         check_suite: Anchor = .{},
 
         pub fn deinit(self: *const @This(), allocator: std.mem.Allocator) void {
-            inline for (.{ "pr", "commit", "check_suite" }) |anchor|
+            inline for (.{ "pr", "commit", "check_suite", "default_branch_commit" }) |anchor|
                 @field(self, anchor).deinit(allocator);
         }
 
@@ -441,6 +454,7 @@ const Scan = struct {
             .pr,
             .commit,
             .check_suite,
+            .default_branch_commit,
             .updated_at,
         })).query(self.allocator, db_conn, .{
             .{ .items = self.repos },
@@ -456,7 +470,7 @@ const Scan = struct {
                 // Do not free `db_scan` because we move ownership of all of its allocated fields into `scan`.
             } else zqlite_typed.freeStructFromRow(@TypeOf(db_scan), self.allocator, db_scan);
 
-            inline for (.{ "pr", "commit", "check_suite" }) |field| {
+            inline for (.{ "pr", "commit", "check_suite", "default_branch_commit" }) |field| {
                 const anchor = &@field(self.progress, field);
                 // The DB schema and Zig field names are meant to stay in sync.
                 const db_anchor = @field(db_scan, field);
@@ -469,7 +483,7 @@ const Scan = struct {
                     anchor.clear(self.allocator);
             }
 
-            std.log.info("continuing interrupted scan from {f} at repo={d}/{d} prs_batch={d} pr={?s} commit={?s} check_suite={?s}", .{
+            std.log.info("continuing interrupted scan from {f} at repo={d}/{d} prs_batch={d} pr={?s} commit={?s} check_suite={?s} default_branch_commit={?s}", .{
                 db_scan.updated_at,
                 self.progress.repos_idx + 1,
                 self.repos.len,
@@ -477,6 +491,7 @@ const Scan = struct {
                 self.progress.pr.id,
                 self.progress.commit.id,
                 self.progress.check_suite.id,
+                self.progress.default_branch_commit.id,
             });
         }
     }
@@ -486,7 +501,8 @@ const Scan = struct {
             self.progress.prss_idx == 0 and
             self.progress.pr.id == null and
             self.progress.commit.id == null and
-            self.progress.check_suite.id == null)
+            self.progress.check_suite.id == null and
+            self.progress.default_branch_commit.id == null)
             try Db.queries.Scan.delete.exec(self.allocator, db_conn, .{
                 .{ .items = self.repos },
                 self.historical,
@@ -500,6 +516,7 @@ const Scan = struct {
                 self.progress.pr.id,
                 self.progress.commit.id,
                 self.progress.check_suite.id,
+                self.progress.default_branch_commit.id,
             });
     }
 
@@ -630,73 +647,7 @@ const Scan = struct {
                         try Db.queries.Commit.upsert.exec(self.allocator, db_conn, .{ commit.id, commit.oid });
 
                     for (commits.value[commits_start_idx..], commits_start_idx..) |commit, commits_idx| {
-                        std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
-
-                        const check_suites = try zretry.zretry(api.queries.fetchCheckSuitesByCommitId, .{
-                            self.allocator,
-                            client,
-                            commit.id,
-                        }, retry_opts);
-                        defer check_suites.deinit();
-
-                        const check_suites_start_idx = self.progress.check_suite.findNextLogVanished(api.types.CheckSuite, check_suites.value);
-                        for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
-                            const scan_check_runs =
-                                self.historical or
-                                if (try Db.queries.CheckSuite.SelectById(.initMany(&.{.updated_at})).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| scan_check_runs: {
-                                    defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
-
-                                    break :scan_check_runs check_suite.updatedAt.inner.compare(db_check_suite.updated_at.inner) != .equal;
-                                } else true;
-
-                            if (scan_check_runs) {
-                                try Db.queries.App.upsert.exec(self.allocator, db_conn, .{
-                                    check_suite.app.id,
-                                    check_suite.app.slug,
-                                    check_suite.app.name,
-                                });
-
-                                try Db.queries.CheckSuite.upsert.exec(self.allocator, db_conn, .{
-                                    check_suite.id,
-                                    repo.value.id,
-                                    commit.id,
-                                    check_suite.app.id,
-                                    check_suite.createdAt,
-                                    check_suite.updatedAt,
-                                    check_suite.status,
-                                    check_suite.conclusion,
-                                });
-
-                                std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
-
-                                const check_runs = try zretry.zretry(api.queries.fetchCheckRunsByCheckSuiteId, .{
-                                    self.allocator,
-                                    client,
-                                    check_suite.id,
-                                }, retry_opts);
-                                defer check_runs.deinit();
-
-                                for (check_runs.value, 0..) |check_run, check_runs_idx| {
-                                    try Db.queries.CheckRun.upsert.exec(self.allocator, db_conn, .{
-                                        check_run.id,
-                                        check_suite.id,
-                                        check_run.name,
-                                        check_run.startedAt,
-                                        check_run.completedAt,
-                                        check_run.externalId,
-                                        check_run.status,
-                                        check_run.conclusion,
-                                    });
-
-                                    std.log.info("{s}: {d}/{d} check runs scanned", .{ check_suite.resourcePath, check_runs_idx + 1, check_runs.value.len });
-                                }
-                            } else std.log.info("{s}: has not changed, skipping", .{check_suite.resourcePath});
-
-                            try self.progress.check_suite.set(self.allocator, check_suite.id);
-                            std.log.info("{s}: {d}/{d} check suites scanned", .{ commit.resourcePath, check_suites_idx + 1, check_suites.value.len });
-
-                            try self.persist(db_conn);
-                        } else self.progress.check_suite.clear(self.allocator);
+                        try self.scanCommitChecks(client, db_conn, retry_opts, repo.value.id, commit);
 
                         try self.progress.commit.set(self.allocator, commit.id);
                         std.log.info("{s}: {d}/{d} commits scanned", .{ pr.resourcePath, commits_idx + 1, commits.value.len });
@@ -709,6 +660,54 @@ const Scan = struct {
                 self.progress.prss_idx += 1;
             } else self.progress.prss_idx = 0;
 
+            if (repo.value.defaultBranchRef) |ref| {
+                std.log.info("/{s}/{s}#{s}{s}: scanning history commits…", .{
+                    repo_owner, repo_name, ref.prefix, ref.name,
+                });
+
+                const commits = try zretry.zretry(api.queries.fetchCommitHistoryByRepo, .{
+                    self.allocator,
+                    client,
+                    repo.value.id,
+                    ref.target.oid,
+                    &.{},
+                    @as(usize, @intCast(self.history_limit)),
+                }, retry_opts);
+                defer commits.deinit();
+
+                const commits_start_idx = self.progress.default_branch_commit.findNextLogVanished(api.types.Commit, commits.value);
+
+                const commits_len = commits_len: for (commits.value[commits_start_idx..], commits_start_idx..) |commit, idx| {
+                    const commit_known = if (try Db.queries.Commit.SelectByOid(.initOne(.id)).query(self.allocator, db_conn, .{commit.oid})) |db_commit| known: {
+                        zqlite_typed.freeStructFromRow(@TypeOf(db_commit), self.allocator, db_commit);
+                        break :known true;
+                    } else false;
+
+                    if (commit_known) {
+                        std.log.info("/{s}/{s}#{s}{s}: stopping {d} from HEAD at known commit {s}", .{
+                            repo_owner, repo_name, ref.prefix, ref.name, idx, commit.oid,
+                        });
+                        break idx;
+                    }
+                } else {
+                    std.log.warn("/{s}/{s}#{s}{s}: reached history depth limit ({d}), skipping older commits", .{
+                        repo_owner, repo_name, ref.prefix, ref.name, self.history_limit,
+                    });
+                    break :commits_len commits.value.len;
+                };
+
+                for (commits.value[commits_start_idx..commits_len], commits_start_idx..) |commit, idx| {
+                    try Db.queries.Commit.upsert.exec(self.allocator, db_conn, .{ commit.id, commit.oid });
+
+                    try self.scanCommitChecks(client, db_conn, retry_opts, repo.value.id, commit);
+
+                    try self.progress.default_branch_commit.set(self.allocator, commit.id);
+                    std.log.info("/{s}/{s}#{s}{s}: {d}/{d} history commits scanned", .{
+                        repo_owner, repo_name, ref.prefix, ref.name, idx + 1, commits_len,
+                    });
+                } else self.progress.default_branch_commit.clear(self.allocator);
+            }
+
             self.progress.repos_idx += 1;
             std.log.info("{d}/{d} repositories scanned", .{ repos_idx + 1, self.repos.len });
         } else self.progress.repos_idx = 0;
@@ -716,6 +715,83 @@ const Scan = struct {
         // All indices and anchors were just set to their zero value,
         // so persisting now will delete the scan from the DB.
         try self.persist(db_conn);
+    }
+
+    fn scanCommitChecks(
+        self: *@This(),
+        client: *api.Client,
+        db_conn: zqlite.Conn,
+        retry_opts: zretry.RetryOptions,
+        repo_id: api.types.Id,
+        commit: api.types.Commit,
+    ) !void {
+        std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
+
+        const check_suites = try zretry.zretry(api.queries.fetchCheckSuitesByCommitId, .{
+            self.allocator,
+            client,
+            commit.id,
+        }, retry_opts);
+        defer check_suites.deinit();
+
+        const check_suites_start_idx = self.progress.check_suite.findNextLogVanished(api.types.CheckSuite, check_suites.value);
+        for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
+            const scan_check_runs =
+                self.historical or
+                if (try Db.queries.CheckSuite.SelectById(.initMany(&.{.updated_at})).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| scan_check_runs: {
+                    defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
+
+                    break :scan_check_runs check_suite.updatedAt.inner.compare(db_check_suite.updated_at.inner) != .equal;
+                } else true;
+
+            if (scan_check_runs) {
+                try Db.queries.App.upsert.exec(self.allocator, db_conn, .{
+                    check_suite.app.id,
+                    check_suite.app.slug,
+                    check_suite.app.name,
+                });
+
+                try Db.queries.CheckSuite.upsert.exec(self.allocator, db_conn, .{
+                    check_suite.id,
+                    repo_id,
+                    commit.id,
+                    check_suite.app.id,
+                    check_suite.createdAt,
+                    check_suite.updatedAt,
+                    check_suite.status,
+                    check_suite.conclusion,
+                });
+
+                std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
+
+                const check_runs = try zretry.zretry(api.queries.fetchCheckRunsByCheckSuiteId, .{
+                    self.allocator,
+                    client,
+                    check_suite.id,
+                }, retry_opts);
+                defer check_runs.deinit();
+
+                for (check_runs.value, 0..) |check_run, check_runs_idx| {
+                    try Db.queries.CheckRun.upsert.exec(self.allocator, db_conn, .{
+                        check_run.id,
+                        check_suite.id,
+                        check_run.name,
+                        check_run.startedAt,
+                        check_run.completedAt,
+                        check_run.externalId,
+                        check_run.status,
+                        check_run.conclusion,
+                    });
+
+                    std.log.info("{s}: {d}/{d} check runs scanned", .{ check_suite.resourcePath, check_runs_idx + 1, check_runs.value.len });
+                }
+            } else std.log.info("{s}: has not changed, skipping", .{check_suite.resourcePath});
+
+            try self.progress.check_suite.set(self.allocator, check_suite.id);
+            std.log.info("{s}: {d}/{d} check suites scanned", .{ commit.resourcePath, check_suites_idx + 1, check_suites.value.len });
+
+            try self.persist(db_conn);
+        } else self.progress.check_suite.clear(self.allocator);
     }
 };
 
