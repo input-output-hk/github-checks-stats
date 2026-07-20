@@ -96,8 +96,14 @@ CREATE TABLE "scan" (
 	"pr" TEXT REFERENCES "pull_request",
 	"commit" TEXT REFERENCES "commit",
 	"check_suite" TEXT REFERENCES "check_suite",
+	"default_branch_commit" TEXT REFERENCES "commit",
 	"updated_at" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	PRIMARY KEY ("repos", "historical")
+	PRIMARY KEY ("repos", "historical"),
+	CHECK ("default_branch_commit" IS NULL OR (
+		"prss_idx" = 0
+		AND "pr" IS NULL
+		AND "commit" IS NULL
+	))
 ) STRICT, WITHOUT ROWID;
 
 CREATE TRIGGER "scan_updated_at"
