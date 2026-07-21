@@ -672,7 +672,7 @@ const Scan = struct {
                     client,
                     repo.value.id,
                     ref.target.oid,
-                    &.{},
+                    null,
                     @as(usize, @intCast(self.history_limit)),
                 }, retry_opts);
                 defer commits.deinit();
