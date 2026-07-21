@@ -81,182 +81,122 @@ pub fn fetchPullRequestsByRepo(
     name: []const u8,
     states: ?[]const types.PullRequestState,
 ) !Cloned([]const types.PullRequest) {
+    const PageInfo = Client.PageInfo(.backward);
+    var iter = client.pageIterator(
+        allocator,
+        \\query(
+        \\  $owner: String!
+        \\  $name: String!
+        \\  $cursor: String
+        \\  $states: [PullRequestState!]
+        \\) {
+        \\  repository(
+        \\    owner: $owner
+        \\    name: $name
+        \\  ) {
+        \\    pullRequests(
+    ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
+        \\      orderBy: {
+        \\        field: CREATED_AT
+        \\        direction: ASC
+        \\      }
+        \\      before: $cursor
+        \\      states: $states
+        \\    ) {
+    ++ PageInfo.gql ++
+        \\      nodes
+    ++ " " ++ comptime api.graphqlPretty(types.PullRequest, "  ", 3) ++ "\n" ++
+        \\    }
+        \\  }
+        \\}
+    ,
+        .{
+            .owner = owner,
+            .name = name,
+            .states = states,
+        },
+        struct {
+            repository: struct {
+                pullRequests: struct {
+                    pageInfo: PageInfo,
+                    nodes: []const types.PullRequest,
+                },
+            },
+        },
+        PageInfo.direction,
+    );
+    defer iter.deinit();
+
     var cloned = try Cloned([]const types.PullRequest).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
     var prs = std.ArrayList(types.PullRequest).empty;
 
-    const Ctx = struct {
-        client: *Client,
+    while (try iter.next()) |response| {
+        defer iter.page = response.repository.pullRequests.pageInfo;
 
-        cloned_allocator: std.mem.Allocator,
-        prs: *std.ArrayList(types.PullRequest),
-
-        owner: []const u8,
-        name: []const u8,
-        states: ?[]const types.PullRequestState,
-
-        const Error = Client.QueryError;
-        const Page = Client.PageInfo(.backward);
-
-        fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
-            const payload = try std.json.Stringify.valueAlloc(page_allocator, .{
-                .query = "" ++
-                    \\query(
-                    \\  $owner: String!
-                    \\  $name: String!
-                    \\  $cursor: String
-                    \\  $states: [PullRequestState!]
-                    \\) {
-                    \\  repository(
-                    \\    owner: $owner
-                    \\    name: $name
-                    \\  ) {
-                    \\    pullRequests(
-                ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
-                    \\      orderBy: {
-                    \\        field: CREATED_AT
-                    \\        direction: ASC
-                    \\      }
-                    \\      before: $cursor
-                    \\      states: $states
-                    \\    ) {
-                ++ Page.gql ++
-                    \\      nodes
-                ++ " " ++ comptime api.graphqlPretty(types.PullRequest, "  ", 3) ++ "\n" ++
-                    \\    }
-                    \\  }
-                    \\}
-                ,
-                .variables = .{
-                    .owner = ctx.owner,
-                    .name = ctx.name,
-                    .cursor = if (page) |p| p.followingCursor() else null,
-                    .states = ctx.states,
-                },
-            }, .{});
-            defer page_allocator.free(payload);
-
-            const response = try ctx.client.query(page_allocator, struct {
-                repository: struct {
-                    pullRequests: struct {
-                        pageInfo: Page,
-                        nodes: []const types.PullRequest,
-                    },
-                },
-            }, payload);
-            defer response.deinit();
-
-            try ctx.prs.ensureUnusedCapacity(ctx.cloned_allocator, response.value.repository.pullRequests.nodes.len);
-            for (response.value.repository.pullRequests.nodes) |pr|
-                ctx.prs.addOneAssumeCapacity().* = try cloneLeaky(ctx.cloned_allocator, pr);
-
-            return clone(page_allocator, response.value.repository.pullRequests.pageInfo);
-        }
-    };
-
-    try Client.paginate(
-        allocator,
-        Ctx,
-        Ctx.Error,
-        Ctx.Page.direction,
-        Ctx.queryPage,
-        .{
-            .client = client,
-            .cloned_allocator = cloned_allocator,
-            .prs = &prs,
-            .owner = owner,
-            .name = name,
-            .states = states,
-        },
-    );
+        try prs.ensureUnusedCapacity(cloned_allocator, response.repository.pullRequests.nodes.len);
+        for (response.repository.pullRequests.nodes) |pr|
+            prs.appendAssumeCapacity(try cloneLeaky(cloned_allocator, pr));
+    }
 
     cloned.value = try prs.toOwnedSlice(cloned_allocator);
     return cloned;
 }
 
 pub fn fetchCommitsByPullRequestId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const types.Commit) {
+    const PageInfo = Client.PageInfo(.backward);
+    var iter = client.pageIterator(
+        allocator,
+        \\query(
+        \\  $id: ID!
+        \\  $cursor: String
+        \\) {
+        \\  node(id: $id) {
+        \\    ... on PullRequest {
+        \\      commits(
+    ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
+        \\        before: $cursor
+        \\      ) {
+    ++ PageInfo.gql ++
+        \\        nodes {
+        \\          commit
+    ++ " " ++ comptime api.graphqlPretty(types.Commit, "  ", 5) ++ "\n" ++
+        \\        }
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ,
+        .{ .id = id },
+        struct {
+            node: struct {
+                commits: struct {
+                    pageInfo: PageInfo,
+                    nodes: []const struct {
+                        commit: types.Commit,
+                    },
+                },
+            },
+        },
+        PageInfo.direction,
+    );
+    defer iter.deinit();
+
     var cloned = try Cloned([]const types.Commit).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
     var commits = std.ArrayList(types.Commit).empty;
 
-    const Ctx = struct {
-        client: *Client,
+    while (try iter.next()) |response| {
+        defer iter.page = response.node.commits.pageInfo;
 
-        cloned_allocator: std.mem.Allocator,
-        commits: *std.ArrayList(types.Commit),
-
-        id: []const u8,
-
-        const Error = Client.QueryError;
-        const Page = Client.PageInfo(.backward);
-
-        fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
-            const payload = try std.json.Stringify.valueAlloc(page_allocator, .{
-                .query = "" ++
-                    \\query(
-                    \\  $id: ID!
-                    \\  $cursor: String
-                    \\) {
-                    \\  node(id: $id) {
-                    \\    ... on PullRequest {
-                    \\      commits(
-                ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
-                    \\        before: $cursor
-                    \\      ) {
-                ++ Page.gql ++
-                    \\        nodes {
-                    \\          commit
-                ++ " " ++ comptime api.graphqlPretty(types.Commit, "  ", 5) ++ "\n" ++
-                    \\        }
-                    \\      }
-                    \\    }
-                    \\  }
-                    \\}
-                ,
-                .variables = .{
-                    .id = ctx.id,
-                    .cursor = if (page) |p| p.followingCursor() else null,
-                },
-            }, .{});
-            defer page_allocator.free(payload);
-
-            var response = try ctx.client.query(page_allocator, struct {
-                node: struct {
-                    commits: struct {
-                        pageInfo: Page,
-                        nodes: []const struct {
-                            commit: types.Commit,
-                        },
-                    },
-                },
-            }, payload);
-            defer response.deinit();
-
-            try ctx.commits.ensureUnusedCapacity(ctx.cloned_allocator, response.value.node.commits.nodes.len);
-            for (response.value.node.commits.nodes) |node|
-                ctx.commits.addOneAssumeCapacity().* = try cloneLeaky(ctx.cloned_allocator, node.commit);
-
-            return clone(page_allocator, response.value.node.commits.pageInfo);
-        }
-    };
-
-    try Client.paginate(
-        allocator,
-        Ctx,
-        Ctx.Error,
-        Ctx.Page.direction,
-        Ctx.queryPage,
-        .{
-            .client = client,
-            .cloned_allocator = cloned_allocator,
-            .commits = &commits,
-            .id = id,
-        },
-    );
+        try commits.ensureUnusedCapacity(cloned_allocator, response.node.commits.nodes.len);
+        for (response.node.commits.nodes) |node|
+            commits.appendAssumeCapacity(try cloneLeaky(cloned_allocator, node.commit));
+    }
 
     cloned.value = try commits.toOwnedSlice(cloned_allocator);
     return cloned;
@@ -270,275 +210,182 @@ pub fn fetchCommitHistoryByRepo(
     stop_oids: []const []const u8,
     max_commits: ?usize,
 ) !Cloned([]const types.Commit) {
+    const PageInfo = Client.PageInfo(.forward);
+    var iter = client.pageIterator(
+        allocator,
+        \\query(
+        \\  $repo_id: ID!
+        \\  $head_oid: GitObjectID!
+        \\  $cursor: String
+        \\) {
+        \\  node(id: $repo_id) {
+        \\    ... on Repository {
+        \\      object(oid: $head_oid) {
+        \\        ... on Commit {
+        \\          history(
+    ++ std.fmt.comptimePrint("first: {d}\n", .{api.page_size}) ++
+        \\            after: $cursor
+        \\          ) {
+    ++ PageInfo.gql ++
+        \\            nodes
+    ++ " " ++ comptime api.graphqlPretty(types.Commit, "  ", 6) ++ "\n" ++
+        \\          }
+        \\        }
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ,
+        .{
+            .repo_id = repo_id,
+            .head_oid = head_oid,
+        },
+        struct {
+            node: struct {
+                object: struct {
+                    history: struct {
+                        pageInfo: PageInfo,
+                        nodes: []const types.Commit,
+                    },
+                },
+            },
+        },
+        PageInfo.direction,
+    );
+    defer iter.deinit();
+
     var cloned = try Cloned([]const types.Commit).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
     var commits = std.ArrayList(types.Commit).empty;
 
-    const Ctx = struct {
-        client: *Client,
+    while (try iter.next()) |response| {
+        const history = response.node.object.history;
 
-        cloned_allocator: std.mem.Allocator,
-        commits: *std.ArrayList(types.Commit),
+        iter.page = history.pageInfo;
+        iter.page.?.hasNextPage = false;
 
-        repo_id: types.Id,
-        head_oid: []const u8,
-        stop_oids: []const []const u8,
-        max_commits: ?usize,
+        var take: usize = 0;
+        nodes: for (history.nodes) |node| {
+            if (max_commits) |max| {
+                if (take == max) break;
+            } else for (stop_oids) |stop_oid|
+                if (std.mem.eql(u8, node.oid, stop_oid)) break :nodes;
 
-        const Error = Client.QueryError;
-        const Page = Client.PageInfo(.forward);
+            take += 1;
+        } else iter.page = history.pageInfo;
 
-        fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
-            const payload = try std.json.Stringify.valueAlloc(page_allocator, .{
-                .query = "" ++
-                    \\query(
-                    \\  $repo_id: ID!
-                    \\  $head_oid: GitObjectID!
-                    \\  $cursor: String
-                    \\) {
-                    \\  node(id: $repo_id) {
-                    \\    ... on Repository {
-                    \\      object(oid: $head_oid) {
-                    \\        ... on Commit {
-                    \\          history(
-                ++ std.fmt.comptimePrint("first: {d}\n", .{api.page_size}) ++
-                    \\            after: $cursor
-                    \\          ) {
-                ++ Page.gql ++
-                    \\            nodes
-                ++ " " ++ comptime api.graphqlPretty(types.Commit, "  ", 6) ++ "\n" ++
-                    \\          }
-                    \\        }
-                    \\      }
-                    \\    }
-                    \\  }
-                    \\}
-                ,
-                .variables = .{
-                    .repo_id = ctx.repo_id,
-                    .head_oid = ctx.head_oid,
-                    .cursor = if (page) |p| p.followingCursor() else null,
-                },
-            }, .{});
-            defer page_allocator.free(payload);
-
-            const response = try ctx.client.query(page_allocator, struct {
-                node: struct {
-                    object: struct {
-                        history: struct {
-                            pageInfo: Page,
-                            nodes: []const types.Commit,
-                        },
-                    },
-                },
-            }, payload);
-            defer response.deinit();
-
-            const history = response.value.node.object.history;
-
-            var page_info = history.pageInfo;
-            page_info.hasNextPage = false;
-
-            var take: usize = 0;
-            for (history.nodes) |node| {
-                if (ctx.max_commits) |max| {
-                    if (take == max) break;
-                } else for (ctx.stop_oids) |stop_oid|
-                    if (std.mem.eql(u8, node.oid, stop_oid)) break;
-
-                take += 1;
-            } else page_info.hasNextPage = history.pageInfo.hasNextPage;
-
-            try ctx.commits.ensureUnusedCapacity(ctx.cloned_allocator, take);
-            for (history.nodes[0..take]) |node|
-                ctx.commits.addOneAssumeCapacity().* = try cloneLeaky(ctx.cloned_allocator, node);
-
-            return clone(page_allocator, page_info);
-        }
-    };
-
-    try Client.paginate(
-        allocator,
-        Ctx,
-        Ctx.Error,
-        Ctx.Page.direction,
-        Ctx.queryPage,
-        .{
-            .client = client,
-            .cloned_allocator = cloned_allocator,
-            .commits = &commits,
-            .repo_id = repo_id,
-            .head_oid = head_oid,
-            .stop_oids = stop_oids,
-            .max_commits = max_commits,
-        },
-    );
+        try commits.ensureUnusedCapacity(cloned_allocator, take);
+        for (history.nodes[0..take]) |node|
+            commits.addOneAssumeCapacity().* = try cloneLeaky(cloned_allocator, node);
+    }
 
     cloned.value = try commits.toOwnedSlice(cloned_allocator);
     return cloned;
 }
 
 pub fn fetchCheckSuitesByCommitId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const types.CheckSuite) {
+    const PageInfo = Client.PageInfo(.backward);
+    var iter = client.pageIterator(
+        allocator,
+        \\query(
+        \\  $id: ID!
+        \\  $cursor: String
+        \\) {
+        \\  node(id: $id) {
+        \\    ... on Commit {
+        \\      checkSuites(
+    ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
+        \\        before: $cursor
+        \\      ) {
+    ++ PageInfo.gql ++
+        \\        nodes
+    ++ " " ++ comptime api.graphqlPretty(types.CheckSuite, "  ", 4) ++ "\n" ++
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ,
+        .{ .id = id },
+        struct {
+            node: struct {
+                checkSuites: struct {
+                    pageInfo: PageInfo,
+                    nodes: []const types.CheckSuite,
+                },
+            },
+        },
+        PageInfo.direction,
+    );
+    defer iter.deinit();
+
     var cloned = try Cloned([]const types.CheckSuite).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
     var check_suites = std.ArrayList(types.CheckSuite).empty;
 
-    const Ctx = struct {
-        client: *Client,
+    while (try iter.next()) |response| {
+        defer iter.page = response.node.checkSuites.pageInfo;
 
-        cloned_allocator: std.mem.Allocator,
-        check_suites: *std.ArrayList(types.CheckSuite),
-
-        id: []const u8,
-
-        const Error = Client.QueryError;
-        const Page = Client.PageInfo(.backward);
-
-        fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
-            const payload = try std.json.Stringify.valueAlloc(page_allocator, .{
-                .query = "" ++
-                    \\query(
-                    \\  $id: ID!
-                    \\  $cursor: String
-                    \\) {
-                    \\  node(id: $id) {
-                    \\    ... on Commit {
-                    \\      checkSuites(
-                ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
-                    \\        before: $cursor
-                    \\      ) {
-                ++ Page.gql ++
-                    \\        nodes
-                ++ " " ++ comptime api.graphqlPretty(types.CheckSuite, "  ", 4) ++ "\n" ++
-                    \\      }
-                    \\    }
-                    \\  }
-                    \\}
-                ,
-                .variables = .{
-                    .id = ctx.id,
-                    .cursor = if (page) |p| p.followingCursor() else null,
-                },
-            }, .{});
-            defer page_allocator.free(payload);
-
-            const response = try ctx.client.query(page_allocator, struct {
-                node: struct {
-                    checkSuites: struct {
-                        pageInfo: Page,
-                        nodes: []const types.CheckSuite,
-                    },
-                },
-            }, payload);
-            defer response.deinit();
-
-            try ctx.check_suites.ensureUnusedCapacity(ctx.cloned_allocator, response.value.node.checkSuites.nodes.len);
-            for (response.value.node.checkSuites.nodes) |check_suite|
-                ctx.check_suites.addOneAssumeCapacity().* = try cloneLeaky(ctx.cloned_allocator, check_suite);
-
-            return clone(page_allocator, response.value.node.checkSuites.pageInfo);
-        }
-    };
-
-    try Client.paginate(
-        allocator,
-        Ctx,
-        Ctx.Error,
-        Ctx.Page.direction,
-        Ctx.queryPage,
-        .{
-            .client = client,
-            .cloned_allocator = cloned_allocator,
-            .check_suites = &check_suites,
-            .id = id,
-        },
-    );
+        try check_suites.ensureUnusedCapacity(cloned_allocator, response.node.checkSuites.nodes.len);
+        for (response.node.checkSuites.nodes) |check_suite|
+            check_suites.appendAssumeCapacity(try cloneLeaky(cloned_allocator, check_suite));
+    }
 
     cloned.value = try check_suites.toOwnedSlice(cloned_allocator);
     return cloned;
 }
 
 pub fn fetchCheckRunsByCheckSuiteId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const types.CheckRun) {
+    const PageInfo = Client.PageInfo(.backward);
+    var iter = client.pageIterator(
+        allocator,
+        \\query(
+        \\  $id: ID!
+        \\  $cursor: String
+        \\) {
+        \\  node(id: $id) {
+        \\    ... on CheckSuite {
+        \\      checkRuns(
+    ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
+        \\        before: $cursor
+        \\      ) {
+    ++ PageInfo.gql ++
+        \\        nodes
+    ++ " " ++ comptime api.graphqlPretty(types.CheckRun, "  ", 4) ++ "\n" ++
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ,
+        .{ .id = id },
+        struct {
+            node: struct {
+                checkRuns: struct {
+                    pageInfo: PageInfo,
+                    nodes: []const types.CheckRun,
+                },
+            },
+        },
+        PageInfo.direction,
+    );
+    defer iter.deinit();
+
     var cloned = try Cloned([]const types.CheckRun).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
     var check_runs = std.ArrayList(types.CheckRun).empty;
 
-    const Ctx = struct {
-        client: *Client,
+    while (try iter.next()) |response| {
+        defer iter.page = response.node.checkRuns.pageInfo;
 
-        cloned_allocator: std.mem.Allocator,
-        check_runs: *std.ArrayList(types.CheckRun),
-
-        id: []const u8,
-
-        const Error = Client.QueryError;
-        const Page = Client.PageInfo(.backward);
-
-        fn queryPage(ctx: @This(), page_allocator: std.mem.Allocator, page: ?Page) Error!Cloned(Page) {
-            const payload = try std.json.Stringify.valueAlloc(page_allocator, .{
-                .query = "" ++
-                    \\query(
-                    \\  $id: ID!
-                    \\  $cursor: String
-                    \\) {
-                    \\  node(id: $id) {
-                    \\    ... on CheckSuite {
-                    \\      checkRuns(
-                ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
-                    \\        before: $cursor
-                    \\      ) {
-                ++ Page.gql ++
-                    \\        nodes
-                ++ " " ++ comptime api.graphqlPretty(types.CheckRun, "  ", 4) ++ "\n" ++
-                    \\      }
-                    \\    }
-                    \\  }
-                    \\}
-                ,
-                .variables = .{
-                    .id = ctx.id,
-                    .cursor = if (page) |p| p.followingCursor() else null,
-                },
-            }, .{});
-            defer page_allocator.free(payload);
-
-            const response = try ctx.client.query(page_allocator, struct {
-                node: struct {
-                    checkRuns: struct {
-                        pageInfo: Page,
-                        nodes: []const types.CheckRun,
-                    },
-                },
-            }, payload);
-            defer response.deinit();
-
-            try ctx.check_runs.ensureUnusedCapacity(ctx.cloned_allocator, response.value.node.checkRuns.nodes.len);
-            for (response.value.node.checkRuns.nodes) |check_run|
-                ctx.check_runs.addOneAssumeCapacity().* = try cloneLeaky(ctx.cloned_allocator, check_run);
-
-            return clone(page_allocator, response.value.node.checkRuns.pageInfo);
-        }
-    };
-
-    try Client.paginate(
-        allocator,
-        Ctx,
-        Ctx.Error,
-        Ctx.Page.direction,
-        Ctx.queryPage,
-        .{
-            .client = client,
-            .cloned_allocator = cloned_allocator,
-            .check_runs = &check_runs,
-            .id = id,
-        },
-    );
+        try check_runs.ensureUnusedCapacity(cloned_allocator, response.node.checkRuns.nodes.len);
+        for (response.node.checkRuns.nodes) |check_run|
+            check_runs.appendAssumeCapacity(try cloneLeaky(cloned_allocator, check_run));
+    }
 
     cloned.value = try check_runs.toOwnedSlice(cloned_allocator);
     return cloned;

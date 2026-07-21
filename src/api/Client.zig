@@ -275,34 +275,105 @@ const ResultError = struct {
     };
 };
 
-pub fn paginate(
-    allocator: std.mem.Allocator,
-    comptime Ctx: type,
-    comptime Errors: type,
-    comptime direction: PaginateDirection,
-    /// Must return a page that was `clone()`d with the given allocator.
-    func: fn (Ctx, std.mem.Allocator, ?PageInfo(direction)) Errors!api.Cloned(PageInfo(direction)),
-    ctx: Ctx,
-) Errors!void {
-    const Page = PageInfo(direction);
-    var page: ?api.Cloned(Page) = null;
-    while (if (page) |p| p.value.hasFollowingPage() else true) {
-        const next_page = try func(ctx, allocator, if (page) |p| p.value else null);
-        errdefer next_page.deinit();
+pub fn PageIterator(
+    Variables: type,
+    Response: type,
+    direction: PaginateDirection,
+) type {
+    const Client = @This();
 
-        if (page) |*p| p.deinit();
-        page = next_page;
+    return struct {
+        client: *Client,
+        arena: std.heap.ArenaAllocator,
+        /// How `arena` will be reset when calling `next()`.
+        arena_reset_mode: std.heap.ArenaAllocator.ResetMode,
+        /// Must be set after calling `next()` to continue iteration!
+        page: ?@This().PageInfo = null,
+        // Might as well be comptime but let's not blow up the binary.
+        /// Must use a `$cursor` variable.
+        gql: []const u8,
+        /// Variables in addition to `$cursor` provided to `gql`.
+        variables: Variables,
 
-        if (api.peek_only) {
-            if (page.?.value.hasFollowingPage()) std.log.debug("more pages available but not fetching to avoid exhausting GitHub rate limit", .{});
-            page.?.value.hasFollowingPagePtr().* = false;
+        pub const PageInfo = Client.PageInfo(direction);
+
+        pub fn deinit(self: @This()) void {
+            self.arena.deinit();
         }
-    } else page.?.deinit();
+
+        /// No need to deinit the response
+        /// as it is freed on the next call.
+        pub fn next(self: *@This()) Client.QueryError!?Response {
+            _ = self.arena.reset(self.arena_reset_mode);
+
+            if (self.page) |page|
+                if (!page.hasFollowingPage())
+                    return null
+                else if (api.peek_only) {
+                    std.log.debug("more pages available but not fetching to avoid exhausting GitHub rate limit", .{});
+                    return null;
+                };
+
+            const allocator = self.arena.allocator();
+
+            var payload = try std.Io.Writer.Allocating.initCapacity(allocator, self.gql.len);
+            defer payload.deinit();
+
+            var stringify = std.json.Stringify{
+                .writer = &payload.writer,
+            };
+
+            {
+                try stringify.beginObject();
+
+                try stringify.objectField("query");
+                try stringify.write(self.gql);
+
+                try stringify.objectField("variables");
+                {
+                    try stringify.beginObject();
+
+                    try stringify.objectField("cursor");
+                    try stringify.write(if (self.page) |p| p.followingCursor() else null);
+
+                    inline for (std.meta.fields(Variables)) |field| {
+                        try stringify.objectField(field.name);
+                        try stringify.write(@field(self.variables, field.name));
+                    }
+
+                    try stringify.endObject();
+                }
+
+                try stringify.endObject();
+            }
+
+            // We can discard the `api.Cloned()` wrapper because we know
+            // that it was allocated with our `self.arena` anyway.
+            return (try self.client.query(allocator, Response, payload.written())).value;
+        }
+    };
+}
+
+pub fn pageIterator(
+    self: *@This(),
+    allocator: std.mem.Allocator,
+    gql: []const u8,
+    variables: anytype,
+    Response: type,
+    comptime direction: PaginateDirection,
+) PageIterator(@TypeOf(variables), Response, direction) {
+    return .{
+        .client = self,
+        .arena = .init(allocator),
+        .arena_reset_mode = .{ .retain_with_limit = gql.len + @sizeOf(api.Cloned(Response)) },
+        .gql = gql,
+        .variables = variables,
+    };
 }
 
 pub const PaginateDirection = enum { forward, backward, both };
 
-pub fn PageInfo(comptime paginate_direction: PaginateDirection) type {
+pub fn PageInfo(paginate_direction: PaginateDirection) type {
     const has_forward, const has_backward = switch (paginate_direction) {
         .forward => .{ true, false },
         .backward => .{ false, true },
@@ -345,6 +416,23 @@ pub fn PageInfo(comptime paginate_direction: PaginateDirection) type {
                 .backward => self.startCursor,
                 .both => @compileError("bi-directional pagination does not have an unambigous following cursor"),
             };
+        }
+
+        pub fn clone(self: @This(), allocator: std.mem.Allocator) std.mem.Allocator.Error!@This() {
+            var cloned: @This() = undefined;
+
+            if (has_forward) cloned.endCursor = try allocator.dupe(u8, self.endCursor);
+            errdefer if (has_forward) allocator.free(cloned.endCursor);
+
+            if (has_backward) cloned.startCursor = try allocator.dupe(u8, self.startCursor);
+            errdefer if (has_backward) allocator.free(cloned.startCursor);
+
+            return cloned;
+        }
+
+        pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
+            if (has_forward) allocator.free(self.endCursor);
+            if (has_backward) allocator.free(self.startCursor);
         }
 
         // skip `void` fields because otherwise they cause an error
