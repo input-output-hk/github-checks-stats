@@ -7,12 +7,27 @@ const clone = api.clone;
 const cloneLeaky = api.cloneLeaky;
 const Cloned = api.Cloned;
 
+pub const Repository = struct {
+    id: types.Id,
+    owner: struct {
+        login: []const u8,
+    },
+    name: []const u8,
+    defaultBranchRef: ?struct {
+        prefix: []const u8,
+        name: []const u8,
+        target: struct {
+            oid: []const u8,
+        },
+    } = null,
+};
+
 pub fn fetchRepoByFullName(
     allocator: std.mem.Allocator,
     client: *Client,
     owner: []const u8,
     name: []const u8,
-) !Cloned(types.Repository) {
+) !Cloned(Repository) {
     const payload = try std.json.Stringify.valueAlloc(allocator, .{
         .query = "" ++
             \\query(
@@ -23,7 +38,7 @@ pub fn fetchRepoByFullName(
             \\    owner: $owner
             \\    name: $name
             \\  )
-        ++ " " ++ comptime api.graphqlPretty(types.Repository, "  ", 3) ++ "\n" ++
+        ++ " " ++ comptime api.graphqlPretty(Repository, "  ", 3) ++ "\n" ++
             \\}
         ,
         .variables = .{
@@ -39,18 +54,26 @@ pub fn fetchRepoByFullName(
         // causing this call to return an error,
         // but also with this JSON field set to null
         // which still needs to parse properly.
-        repository: ?types.Repository,
+        repository: ?Repository,
     }, payload);
     defer response.deinit();
 
     return try clone(allocator, response.value.repository.?);
 }
 
+pub const PullRequest = struct {
+    id: types.Id,
+    resourcePath: []const u8,
+
+    number: types.Int,
+    state: types.PullRequestState,
+};
+
 pub fn fetchPullRequestsByIds(
     allocator: std.mem.Allocator,
     client: *Client,
     ids: []const types.Id,
-) !Cloned([]const types.PullRequest) {
+) !Cloned([]const PullRequest) {
     const payload = try std.json.Stringify.valueAlloc(allocator, .{
         .query = "" ++
             \\query(
@@ -58,7 +81,7 @@ pub fn fetchPullRequestsByIds(
             \\) {
             \\  nodes(ids: $ids) {
             \\    ... on PullRequest
-        ++ " " ++ comptime api.graphqlPretty(types.PullRequest, "  ", 3) ++ "\n" ++
+        ++ " " ++ comptime api.graphqlPretty(PullRequest, "  ", 3) ++ "\n" ++
             \\  }
             \\}
         ,
@@ -68,7 +91,7 @@ pub fn fetchPullRequestsByIds(
     }, .{});
     defer allocator.free(payload);
 
-    const response = try client.query(allocator, struct { nodes: []const types.PullRequest }, payload);
+    const response = try client.query(allocator, struct { nodes: []const PullRequest }, payload);
     defer response.deinit();
 
     return try clone(allocator, response.value.nodes);
@@ -80,7 +103,7 @@ pub fn fetchPullRequestsByRepo(
     owner: []const u8,
     name: []const u8,
     states: ?[]const types.PullRequestState,
-) !Cloned([]const types.PullRequest) {
+) !Cloned([]const PullRequest) {
     const PageInfo = Client.PageInfo(.backward);
     var iter = client.pageIterator(
         allocator,
@@ -105,7 +128,7 @@ pub fn fetchPullRequestsByRepo(
         \\    ) {
     ++ PageInfo.gql ++
         \\      nodes
-    ++ " " ++ comptime api.graphqlPretty(types.PullRequest, "  ", 3) ++ "\n" ++
+    ++ " " ++ comptime api.graphqlPretty(PullRequest, "  ", 3) ++ "\n" ++
         \\    }
         \\  }
         \\}
@@ -119,7 +142,7 @@ pub fn fetchPullRequestsByRepo(
             repository: struct {
                 pullRequests: struct {
                     pageInfo: PageInfo,
-                    nodes: []const types.PullRequest,
+                    nodes: []const PullRequest,
                 },
             },
         },
@@ -127,11 +150,11 @@ pub fn fetchPullRequestsByRepo(
     );
     defer iter.deinit();
 
-    var cloned = try Cloned([]const types.PullRequest).init(allocator);
+    var cloned = try Cloned([]const PullRequest).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
-    var prs = std.ArrayList(types.PullRequest).empty;
+    var prs = std.ArrayList(PullRequest).empty;
 
     while (try iter.next()) |response| {
         defer iter.page = response.repository.pullRequests.pageInfo;
@@ -145,7 +168,14 @@ pub fn fetchPullRequestsByRepo(
     return cloned;
 }
 
-pub fn fetchCommitsByPullRequestId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const types.Commit) {
+pub const Commit = struct {
+    id: types.Id,
+    resourcePath: []const u8,
+
+    oid: []const u8,
+};
+
+pub fn fetchCommitsByPullRequestId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const Commit) {
     const PageInfo = Client.PageInfo(.backward);
     var iter = client.pageIterator(
         allocator,
@@ -162,7 +192,7 @@ pub fn fetchCommitsByPullRequestId(allocator: std.mem.Allocator, client: *Client
     ++ PageInfo.gql ++
         \\        nodes {
         \\          commit
-    ++ " " ++ comptime api.graphqlPretty(types.Commit, "  ", 5) ++ "\n" ++
+    ++ " " ++ comptime api.graphqlPretty(Commit, "  ", 5) ++ "\n" ++
         \\        }
         \\      }
         \\    }
@@ -175,7 +205,7 @@ pub fn fetchCommitsByPullRequestId(allocator: std.mem.Allocator, client: *Client
                 commits: struct {
                     pageInfo: PageInfo,
                     nodes: []const struct {
-                        commit: types.Commit,
+                        commit: Commit,
                     },
                 },
             },
@@ -184,11 +214,11 @@ pub fn fetchCommitsByPullRequestId(allocator: std.mem.Allocator, client: *Client
     );
     defer iter.deinit();
 
-    var cloned = try Cloned([]const types.Commit).init(allocator);
+    var cloned = try Cloned([]const Commit).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
-    var commits = std.ArrayList(types.Commit).empty;
+    var commits = std.ArrayList(Commit).empty;
 
     while (try iter.next()) |response| {
         defer iter.page = response.node.commits.pageInfo;
@@ -209,7 +239,7 @@ pub fn fetchCommitHistoryByRepo(
     head_oid: []const u8,
     stop_oids: []const []const u8,
     max_commits: ?usize,
-) !Cloned([]const types.Commit) {
+) !Cloned([]const Commit) {
     const PageInfo = Client.PageInfo(.forward);
     var iter = client.pageIterator(
         allocator,
@@ -228,7 +258,7 @@ pub fn fetchCommitHistoryByRepo(
         \\          ) {
     ++ PageInfo.gql ++
         \\            nodes
-    ++ " " ++ comptime api.graphqlPretty(types.Commit, "  ", 6) ++ "\n" ++
+    ++ " " ++ comptime api.graphqlPretty(Commit, "  ", 6) ++ "\n" ++
         \\          }
         \\        }
         \\      }
@@ -245,7 +275,7 @@ pub fn fetchCommitHistoryByRepo(
                 object: struct {
                     history: struct {
                         pageInfo: PageInfo,
-                        nodes: []const types.Commit,
+                        nodes: []const Commit,
                     },
                 },
             },
@@ -254,11 +284,11 @@ pub fn fetchCommitHistoryByRepo(
     );
     defer iter.deinit();
 
-    var cloned = try Cloned([]const types.Commit).init(allocator);
+    var cloned = try Cloned([]const Commit).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
-    var commits = std.ArrayList(types.Commit).empty;
+    var commits = std.ArrayList(Commit).empty;
 
     while (try iter.next()) |response| {
         const history = response.node.object.history;
@@ -285,7 +315,22 @@ pub fn fetchCommitHistoryByRepo(
     return cloned;
 }
 
-pub fn fetchCheckSuitesByCommitId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const types.CheckSuite) {
+pub const CheckSuite = struct {
+    id: types.Id,
+    resourcePath: []const u8,
+
+    app: struct {
+        id: types.Id,
+        slug: []const u8,
+        name: []const u8,
+    },
+    status: types.CheckStatusState,
+    conclusion: ?types.CheckConclusionState = null,
+    createdAt: types.DateTime,
+    updatedAt: types.DateTime,
+};
+
+pub fn fetchCheckSuitesByCommitId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const CheckSuite) {
     const PageInfo = Client.PageInfo(.backward);
     var iter = client.pageIterator(
         allocator,
@@ -301,7 +346,7 @@ pub fn fetchCheckSuitesByCommitId(allocator: std.mem.Allocator, client: *Client,
         \\      ) {
     ++ PageInfo.gql ++
         \\        nodes
-    ++ " " ++ comptime api.graphqlPretty(types.CheckSuite, "  ", 4) ++ "\n" ++
+    ++ " " ++ comptime api.graphqlPretty(CheckSuite, "  ", 4) ++ "\n" ++
         \\      }
         \\    }
         \\  }
@@ -312,7 +357,7 @@ pub fn fetchCheckSuitesByCommitId(allocator: std.mem.Allocator, client: *Client,
             node: struct {
                 checkSuites: struct {
                     pageInfo: PageInfo,
-                    nodes: []const types.CheckSuite,
+                    nodes: []const CheckSuite,
                 },
             },
         },
@@ -320,11 +365,11 @@ pub fn fetchCheckSuitesByCommitId(allocator: std.mem.Allocator, client: *Client,
     );
     defer iter.deinit();
 
-    var cloned = try Cloned([]const types.CheckSuite).init(allocator);
+    var cloned = try Cloned([]const CheckSuite).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
-    var check_suites = std.ArrayList(types.CheckSuite).empty;
+    var check_suites = std.ArrayList(CheckSuite).empty;
 
     while (try iter.next()) |response| {
         defer iter.page = response.node.checkSuites.pageInfo;
@@ -338,7 +383,19 @@ pub fn fetchCheckSuitesByCommitId(allocator: std.mem.Allocator, client: *Client,
     return cloned;
 }
 
-pub fn fetchCheckRunsByCheckSuiteId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const types.CheckRun) {
+pub const CheckRun = struct {
+    id: types.Id,
+    resourcePath: []const u8,
+
+    name: []const u8,
+    startedAt: types.DateTime,
+    completedAt: ?types.DateTime,
+    externalId: ?[]const u8,
+    status: types.CheckStatusState,
+    conclusion: ?types.CheckConclusionState = null,
+};
+
+pub fn fetchCheckRunsByCheckSuiteId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const CheckRun) {
     const PageInfo = Client.PageInfo(.backward);
     var iter = client.pageIterator(
         allocator,
@@ -354,7 +411,7 @@ pub fn fetchCheckRunsByCheckSuiteId(allocator: std.mem.Allocator, client: *Clien
         \\      ) {
     ++ PageInfo.gql ++
         \\        nodes
-    ++ " " ++ comptime api.graphqlPretty(types.CheckRun, "  ", 4) ++ "\n" ++
+    ++ " " ++ comptime api.graphqlPretty(CheckRun, "  ", 4) ++ "\n" ++
         \\      }
         \\    }
         \\  }
@@ -365,7 +422,7 @@ pub fn fetchCheckRunsByCheckSuiteId(allocator: std.mem.Allocator, client: *Clien
             node: struct {
                 checkRuns: struct {
                     pageInfo: PageInfo,
-                    nodes: []const types.CheckRun,
+                    nodes: []const CheckRun,
                 },
             },
         },
@@ -373,11 +430,11 @@ pub fn fetchCheckRunsByCheckSuiteId(allocator: std.mem.Allocator, client: *Clien
     );
     defer iter.deinit();
 
-    var cloned = try Cloned([]const types.CheckRun).init(allocator);
+    var cloned = try Cloned([]const CheckRun).init(allocator);
     errdefer cloned.deinit();
     const cloned_allocator = cloned.arena.allocator();
 
-    var check_runs = std.ArrayList(types.CheckRun).empty;
+    var check_runs = std.ArrayList(CheckRun).empty;
 
     while (try iter.next()) |response| {
         defer iter.page = response.node.checkRuns.pageInfo;
