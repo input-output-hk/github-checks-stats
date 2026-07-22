@@ -56,19 +56,30 @@ pub fn init(
     };
 }
 
-pub const QueryError =
-    std.http.Client.FetchError ||
-    std.json.ParseError(std.json.Scanner) ||
-    error{ QueryFailed, RateLimited };
+pub const QueryError = ParseResponseError;
 
-/// If `error.RateLimited` is returned, `rate_limit_reset` is non-null.
+/// Shorthand for `request()` followed by `parseResponse()`.
 pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, payload: []const u8) QueryError!api.Cloned(Data) {
-    var response_body = std.Io.Writer.Allocating.init(allocator);
-    defer response_body.deinit();
+    var req = try self.request();
+    defer req.deinit();
 
-    response_body.clearRetainingCapacity();
+    req.transfer_encoding = .{ .content_length = payload.len };
 
-    var request = try self.client.request(.POST, self.endpoint, .{
+    // At least 8000 is recommended for `receiveHead()`.
+    var buffer: [8000]u8 = undefined;
+
+    var body_w = try req.sendBodyUnflushed(&buffer);
+    try body_w.writer.writeAll(payload);
+    try body_w.end();
+    try body_w.flush();
+
+    var response = try req.receiveHead(&buffer);
+
+    return try self.parseResponse(allocator, Data, &response);
+}
+
+pub fn request(self: *@This()) std.http.Client.RequestError!std.http.Client.Request {
+    return self.client.request(.POST, self.endpoint, .{
         .headers = .{
             .authorization = if (self.authorization) |authorization| .{ .override = authorization } else .default,
             .user_agent = if (self.user_agent) |user_agent| .{ .override = user_agent } else .default,
@@ -79,23 +90,15 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
             .{ .name = "X-Github-Next-Global-ID", .value = "1" },
         },
     });
-    defer request.deinit();
+}
 
-    request.transfer_encoding = .{ .content_length = payload.len };
-    {
-        var body_buffer: [utils.mem.b_per_kib]u8 = undefined;
-        var body_w = try request.sendBodyUnflushed(&body_buffer);
+pub const ParseResponseError =
+    std.http.Client.FetchError ||
+    std.json.ParseError(std.json.Scanner) ||
+    error{ QueryFailed, RateLimited };
 
-        try body_w.writer.writeAll(payload);
-        try body_w.end();
-        try body_w.flush();
-    }
-
-    var response = response: {
-        var redirect_buffer: [8000]u8 = undefined;
-        break :response try request.receiveHead(&redirect_buffer);
-    };
-
+/// If `error.RateLimited` is returned, `rate_limit_reset` is non-null.
+pub fn parseResponse(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, response: *std.http.Client.Response) ParseResponseError!api.Cloned(Data) {
     {
         // https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#exceeding-the-rate-limit
         // We need to read headers now as they are invalidated once the response body is initialized.
@@ -111,6 +114,11 @@ pub fn query(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, 
             }
         }
     }
+
+    var response_body = std.Io.Writer.Allocating.init(allocator);
+    defer response_body.deinit();
+
+    response_body.clearRetainingCapacity();
 
     {
         const decompress_buffer: []u8 = switch (response.head.content_encoding) {
