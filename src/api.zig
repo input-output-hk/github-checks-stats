@@ -49,13 +49,13 @@ pub fn clone(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.Error
 pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.Error!@TypeOf(obj) {
     const Obj = @TypeOf(obj);
     switch (@typeInfo(Obj)) {
-        .@"pointer" => |pointer| switch (pointer.size) {
+        .pointer => |pointer| switch (pointer.size) {
             .one, .c => {
                 const ptr = try allocator.create(pointer.child);
                 ptr.* = try cloneLeaky(allocator, obj.*);
                 return ptr;
             },
-            .@"slice" => {
+            .slice => {
                 const slice = try allocator.alloc(pointer.child, obj.len);
                 for (slice, obj) |*dst, src|
                     dst.* = try cloneLeaky(allocator, src);
@@ -63,14 +63,14 @@ pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.
             },
             .many => @compileError("cannot clone many-item pointer"),
         },
-        .@"array" => {
+        .array => {
             const array: Obj = undefined;
             for (&array, obj) |*dst, src|
                 dst.* = try cloneLeaky(allocator, src);
             return array;
         },
-        .@"optional" => return if (obj) |child| @as(Obj, try cloneLeaky(allocator, child)) else null,
-        .@"int", .@"float", .@"vector", .@"enum", .@"bool" => return obj,
+        .optional => return if (obj) |child| @as(Obj, try cloneLeaky(allocator, child)) else null,
+        .int, .float, .vector, .@"enum", .bool => return obj,
         .@"union" => {
             const active_tag = std.meta.activeTag(obj);
             const active_tag_name = @tagName(active_tag);
@@ -107,7 +107,7 @@ pub fn graphqlPretty(comptime T: type, comptime indent: []const u8, indent_level
 
         if (@as(?type, switch (@typeInfo(field.type)) {
             .@"struct" => field.type,
-            .@"optional" => |optional| if (@typeInfo(optional.child) == .@"struct")
+            .optional => |optional| if (@typeInfo(optional.child) == .@"struct")
                 optional.child
             else
                 null,
