@@ -1,14 +1,6 @@
-//! Subset of types needed.
+//! Primitives and enums shared across GraphQL response types.
+//! Object types live next to the queries that produce them (see `queries.zig`).
 //! https://docs.github.com/en/graphql/reference
-
-// TODO There is no proper way to create types for API objects with GraphQL.
-// The type changes based on the query. Most prominently, non-primitive fields
-// can introduce type loops. One way to work around this would be
-// to fetch only the IDs of non-primitive types in fields, but that negates
-// the advantages of GraphQL in the first place.
-// This means that these types are only response types for specific queries.
-// This is not easily apparent by looking at this file though.
-// Improve that by moving them next to their queries instead.
 
 const std = @import("std");
 
@@ -54,18 +46,6 @@ pub const DateTime = struct {
 pub const Id = []const u8;
 pub const Int = i32;
 
-pub const RepositoryOwner = struct {
-    id: Id,
-    login: []const u8,
-};
-
-pub const Repository = struct {
-    id: Id,
-    owner: RepositoryOwner,
-    name: []const u8,
-    defaultBranchRef: ?Ref = null,
-};
-
 pub const PullRequestState = enum {
     OPEN,
     CLOSED,
@@ -82,47 +62,6 @@ pub const PullRequestState = enum {
     pub fn format(self: @This(), writer: *std.Io.Writer) !void {
         try writer.writeAll(@tagName(self));
     }
-};
-
-pub const PullRequest = struct {
-    id: Id,
-    resourcePath: []const u8,
-
-    number: Int,
-    title: []const u8,
-    state: PullRequestState,
-};
-
-pub const GitObject = struct {
-    id: Id,
-    oid: []const u8,
-};
-
-pub const Commit = struct {
-    id: Id,
-    resourcePath: []const u8,
-
-    oid: []const u8,
-    messageHeadline: []const u8,
-};
-
-pub const App = struct {
-    id: Id,
-    slug: []const u8,
-    name: []const u8,
-};
-
-pub const Ref = struct {
-    id: Id,
-    prefix: []const u8,
-    name: []const u8,
-    target: GitObject,
-};
-
-pub const User = struct {
-    name: ?[]const u8 = null,
-    login: []const u8,
-    company: ?[]const u8 = null,
 };
 
 pub const CheckConclusionState = enum {
@@ -168,29 +107,4 @@ pub const CheckStatusState = enum {
     pub fn format(self: @This(), writer: *std.Io.Writer) !void {
         try writer.writeAll(@tagName(self));
     }
-};
-
-pub const CheckSuite = struct {
-    id: Id,
-    resourcePath: []const u8,
-
-    app: App,
-    branch: ?Ref = null,
-    creator: ?User = null,
-    status: CheckStatusState,
-    conclusion: ?CheckConclusionState = null,
-    createdAt: DateTime,
-    updatedAt: DateTime,
-};
-
-pub const CheckRun = struct {
-    id: Id,
-    resourcePath: []const u8,
-
-    name: []const u8,
-    startedAt: DateTime,
-    completedAt: ?DateTime,
-    externalId: ?[]const u8,
-    status: CheckStatusState,
-    conclusion: ?CheckConclusionState = null,
 };

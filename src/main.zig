@@ -606,13 +606,13 @@ const Scan = struct {
             } else null;
             defer if (prs_closed) |pr| pr.deinit();
 
-            const prss = [_][]const api.types.PullRequest{
+            const prss = [_][]const api.queries.PullRequest{
                 prs_open.value,
                 if (prs_closed) |pr| pr.value else &.{},
             };
 
             for (prss[self.progress.prss_idx..]) |prs| {
-                const prs_start_idx = if (self.progress.pr.find(api.types.PullRequest, prs)) |idx| idx + 1 else 0;
+                const prs_start_idx = if (self.progress.pr.find(api.queries.PullRequest, prs)) |idx| idx + 1 else 0;
                 for (prs[prs_start_idx..]) |pr|
                     try Db.queries.PullRequest.upsert.exec(self.allocator, db_conn, .{ pr.id, repo.value.id, pr.number, pr.state });
             }
@@ -632,7 +632,7 @@ const Scan = struct {
                     break :prev_prs_count count;
                 };
 
-                const prs_start_idx = self.progress.pr.findNextLogVanished(api.types.PullRequest, prs);
+                const prs_start_idx = self.progress.pr.findNextLogVanished(api.queries.PullRequest, prs);
                 for (prs[prs_start_idx..], prs_start_idx..) |pr, prs_idx| {
                     std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
 
@@ -643,7 +643,7 @@ const Scan = struct {
                     }, retry_opts);
                     defer commits.deinit();
 
-                    const commits_start_idx = self.progress.commit.findNextLogVanished(api.types.Commit, commits.value);
+                    const commits_start_idx = self.progress.commit.findNextLogVanished(api.queries.Commit, commits.value);
 
                     for (commits.value[commits_start_idx..]) |commit|
                         try Db.queries.Commit.upsert.exec(self.allocator, db_conn, .{ commit.id, commit.oid });
@@ -677,7 +677,7 @@ const Scan = struct {
                 }, retry_opts);
                 defer commits.deinit();
 
-                const commits_start_idx = self.progress.default_branch_commit.findNextLogVanished(api.types.Commit, commits.value);
+                const commits_start_idx = self.progress.default_branch_commit.findNextLogVanished(api.queries.Commit, commits.value);
 
                 const commits_len = commits_len: for (commits.value[commits_start_idx..], commits_start_idx..) |commit, idx| {
                     const commit_known = if (try Db.queries.Commit.SelectByOid(.initOne(.id)).query(self.allocator, db_conn, .{commit.oid})) |db_commit| known: {
@@ -725,7 +725,7 @@ const Scan = struct {
         db_conn: zqlite.Conn,
         retry_opts: zretry.RetryOptions,
         repo_id: api.types.Id,
-        commit: api.types.Commit,
+        commit: api.queries.Commit,
     ) !void {
         std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
 
@@ -736,7 +736,7 @@ const Scan = struct {
         }, retry_opts);
         defer check_suites.deinit();
 
-        const check_suites_start_idx = self.progress.check_suite.findNextLogVanished(api.types.CheckSuite, check_suites.value);
+        const check_suites_start_idx = self.progress.check_suite.findNextLogVanished(api.queries.CheckSuite, check_suites.value);
         for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
             const scan_check_runs =
                 self.historical or
