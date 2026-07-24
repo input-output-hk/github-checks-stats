@@ -16,12 +16,25 @@ CREATE TABLE "pull_request" (
 		'MERGED',
 		'OPEN'
 	)),
+	"head_ref_oid" TEXT NOT NULL,
+	"merge_base_oid" TEXT, -- null if the PR has no commits
 	UNIQUE ("repository", "number")
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE "commit" (
 	"id" TEXT PRIMARY KEY,
-	"oid" TEXT NOT NULL UNIQUE -- git hash
+	"oid" TEXT NOT NULL UNIQUE,
+	"repository" TEXT NOT NULL REFERENCES "repository",
+	"parent" TEXT REFERENCES "commit"
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE "ref" (
+	"id" TEXT PRIMARY KEY,
+	"repository" TEXT NOT NULL REFERENCES "repository",
+	"prefix" TEXT NOT NULL,
+	"name" TEXT NOT NULL,
+	"target_oid" TEXT NOT NULL,
+	UNIQUE ("repository", "prefix", "name")
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE "app" (
@@ -58,6 +71,8 @@ CREATE TABLE "check_suite" (
 	))
 ) STRICT, WITHOUT ROWID;
 
+CREATE INDEX "idx_check_suite_commit" ON "check_suite" ("commit");
+
 CREATE TABLE "check_run" (
 	"id" TEXT PRIMARY KEY,
 	"suite" TEXT NOT NULL REFERENCES "check_suite",
@@ -85,6 +100,8 @@ CREATE TABLE "check_run" (
 		'TIMED_OUT'
 	))
 ) STRICT, WITHOUT ROWID;
+
+CREATE INDEX "idx_check_run_suite" ON "check_run" ("suite");
 
 -- application state
 

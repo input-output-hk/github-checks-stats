@@ -12,7 +12,10 @@ pull_requests: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.Repo, struct 
 check_runs: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, struct {
     state: db_queries.CheckState.Flat,
 } })),
-pull_request_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo }), &.{
+branch_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, Labels.Branch }), &time_to_fix_buckets),
+pull_request_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo }), &time_to_fix_buckets),
+
+const time_to_fix_buckets = [_]u64{
     5 * std.time.s_per_min,
     15 * std.time.s_per_min,
     30 * std.time.s_per_min,
@@ -30,16 +33,18 @@ pull_request_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Label
     6 * std.time.s_per_day,
     std.time.s_per_week,
     2 * std.time.s_per_week,
-}),
+};
 
 const Labels = struct {
     pub const App = struct { app: types.Id };
     pub const Repo = struct { repo: []const u8 };
+    pub const Branch = struct { branch: []const u8 };
 };
 
 pub fn deinit(self: *@This()) void {
     self.pull_requests.deinit();
     self.check_runs.deinit();
+    self.branch_time_to_fix.deinit();
     self.pull_request_time_to_fix.deinit();
 }
 
@@ -51,8 +56,11 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
         .check_runs = try .init(allocator, io, "check_runs", .{
             .help = "Count of check runs",
         }, opts),
+        .branch_time_to_fix = try .init(allocator, io, "branch_time_to_fix_seconds", .{
+            .help = "Duration from an app's first failing commit's check run to first successful commit's check run on a branch",
+        }, opts),
         .pull_request_time_to_fix = try .init(allocator, io, "pull_request_time_to_fix_seconds", .{
-            .help = "Duration from first failing commit to first successful commit on a pull request",
+            .help = "Duration from an app's first failing commit's check run to first successful commit's check run on a pull request",
         }, opts),
     };
 }
@@ -126,23 +134,33 @@ pub const Scrape = struct {
                     .fixed_at = row.fixed_at,
                     .repo_id = row.repo_id,
                     .app_id = row.app_id,
+                    .seed_id = row.seed_id,
                     .cycle = row.cycle,
                 }).dupe(self.allocator);
                 errdefer new_cursor.deinit(self.allocator);
 
-                try metrics.pull_request_time_to_fix.observe(.{
-                    .app = row.app_slug,
-                    .repo = row.repo_full,
-                }, @intCast(row.broken_duration_seconds));
+                if (row.branch) |branch|
+                    try metrics.branch_time_to_fix.observe(.{
+                        .app = row.app_slug,
+                        .repo = row.repo_full,
+                        .branch = branch,
+                    }, @intCast(row.broken_duration_seconds))
+                else
+                    try metrics.pull_request_time_to_fix.observe(.{
+                        .app = row.app_slug,
+                        .repo = row.repo_full,
+                    }, @intCast(row.broken_duration_seconds));
 
-                self.time_to_fix_cursor.deinit(self.allocator);
+                {
+                    self.time_to_fix_cursor.deinit(self.allocator);
 
-                // Now that the old cursor is freed,
-                // no errors must happen until the new cursor is set,
-                // so that the new cursor will be freed.
-                errdefer comptime unreachable;
+                    // Now that the old cursor is freed,
+                    // no errors must happen until the new cursor is set,
+                    // so that the new cursor will be freed.
+                    errdefer comptime unreachable;
 
-                self.time_to_fix_cursor = new_cursor;
+                    self.time_to_fix_cursor = new_cursor;
+                }
             }
 
             try rows.deinitErr();

@@ -37,7 +37,7 @@ pub fn main(init: std.process.Init) !void {
                 .@"user-agent" = "User-Agent header to send, may be needed to authenticate as a GitHub App",
                 .@"token-file" = "file to read a token from to authorize with",
                 .historical = "scan only closed instead of open PRs (default: true in scan mode, false otherwise)",
-                .@"history-limit" = std.fmt.comptimePrint("max depth of commits to walk when scanning the default branch (default: {d})", .{std.meta.fieldInfo(Config.Scan, .history_limit).defaultValue().?}),
+                .@"history-limit" = std.fmt.comptimePrint("max depth of commits to walk (default: {d})", .{std.meta.fieldInfo(Config.Scan, .history_limit).defaultValue().?}),
                 .@"metrics-listen" = "listen address and port or unix domain socket after `unix:` prefix to bind for metrics",
             },
         };
@@ -614,7 +614,7 @@ const Scan = struct {
             for (prss[self.progress.prss_idx..]) |prs| {
                 const prs_start_idx = if (self.progress.pr.find(api.queries.PullRequest, prs)) |idx| idx + 1 else 0;
                 for (prs[prs_start_idx..]) |pr|
-                    try Db.queries.PullRequest.upsert.exec(self.allocator, db_conn, .{ pr.id, repo.value.id, pr.number, pr.state });
+                    try Db.queries.PullRequest.upsert.exec(self.allocator, db_conn, .{ pr.id, repo.value.id, pr.number, pr.state, pr.headRefOid, pr.mergeBaseOid() });
             }
 
             const prs_count = prs_count: {
@@ -634,19 +634,26 @@ const Scan = struct {
 
                 const prs_start_idx = self.progress.pr.findNextLogVanished(api.queries.PullRequest, prs);
                 for (prs[prs_start_idx..], prs_start_idx..) |pr, prs_idx| {
+                    const merge_base_oid = pr.mergeBaseOid() orelse {
+                        std.log.info("{s}: no commits, skipping", .{pr.resourcePath});
+                        return;
+                    };
+
                     std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
 
-                    const commits = try zretry.zretry(api.queries.fetchCommitsByPullRequestId, .{
+                    const commits = try zretry.zretry(api.queries.fetchCommitHistoryByRepo, .{
                         self.allocator,
                         client,
-                        pr.id,
+                        repo.value.id,
+                        pr.headRefOid,
+                        &.{merge_base_oid},
+                        @as(usize, @intCast(self.history_limit)),
                     }, retry_opts);
                     defer commits.deinit();
 
                     const commits_start_idx = self.progress.commit.findNextLogVanished(api.queries.Commit, commits.value);
 
-                    for (commits.value[commits_start_idx..]) |commit|
-                        try Db.queries.Commit.upsert.exec(self.allocator, db_conn, .{ commit.id, commit.oid });
+                    try upsertCommits(self.allocator, db_conn, repo.value.id, commits.value[commits_start_idx..]);
 
                     for (commits.value[commits_start_idx..], commits_start_idx..) |commit, commits_idx| {
                         try self.scanCommitChecks(client, db_conn, retry_opts, repo.value.id, commit);
@@ -698,9 +705,18 @@ const Scan = struct {
                     break :commits_len commits.value.len;
                 };
 
-                for (commits.value[commits_start_idx..commits_len], commits_start_idx..) |commit, idx| {
-                    try Db.queries.Commit.upsert.exec(self.allocator, db_conn, .{ commit.id, commit.oid });
+                // Slicing past `commits_len` so that PR scans don't prevent commit parents from being inserted here.
+                try upsertCommits(self.allocator, db_conn, repo.value.id, commits.value[commits_start_idx..]);
 
+                // The ref's target OID is not a foreign key so we could insert the ref
+                // before the commit it references. Let's pretend it's a foreign key
+                // anyway and insert only once the referenced commit is already in the DB.
+                // Feels cleaner and is prepared in case it does become a foreign key in the future.
+                try Db.queries.Ref.upsert.exec(self.allocator, db_conn, .{
+                    ref.id, repo.value.id, ref.prefix, ref.name, ref.target.oid,
+                });
+
+                for (commits.value[commits_start_idx..commits_len], commits_start_idx..) |commit, idx| {
                     try self.scanCommitChecks(client, db_conn, retry_opts, repo.value.id, commit);
 
                     try self.progress.default_branch_commit.set(self.allocator, commit.id);
@@ -717,6 +733,33 @@ const Scan = struct {
         // All indices and anchors were just set to their zero value,
         // so persisting now will delete the scan from the DB.
         try self.persist(db_conn);
+    }
+
+    /// Reverse walk order (oldest first) so the parent foreign key is satisfied at each insert.
+    fn upsertCommits(
+        allocator: std.mem.Allocator,
+        db_conn: zqlite.Conn,
+        repo_id: api.types.Id,
+        commits: []const api.queries.Commit,
+    ) !void {
+        var iter = std.mem.reverseIterator(commits);
+        while (iter.next()) |commit| {
+            const parent_id: ?api.types.Id = parent_id: {
+                if (commit.parents.nodes.len == 0) break :parent_id null;
+
+                const parent_id = commit.parents.nodes[0].id;
+                if (try Db.queries.Commit.SelectById(.initOne(.id)).query(allocator, db_conn, .{parent_id})) |row| {
+                    zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+                    break :parent_id parent_id;
+                }
+
+                break :parent_id null;
+            };
+
+            try Db.queries.Commit.upsert.exec(allocator, db_conn, .{
+                commit.id, commit.oid, repo_id, parent_id,
+            });
+        }
     }
 
     fn scanCommitChecks(

@@ -14,6 +14,7 @@ pub const Repository = struct {
     },
     name: []const u8,
     defaultBranchRef: ?struct {
+        id: types.Id,
         prefix: []const u8,
         name: []const u8,
         target: struct {
@@ -67,6 +68,51 @@ pub const PullRequest = struct {
 
     number: types.Int,
     state: types.PullRequestState,
+    headRefOid: []const u8,
+    commits: struct {
+        /// Either length 0 or 1.
+        /// Has only the first/oldest commit.
+        nodes: []const struct {
+            commit: struct {
+                parents: struct {
+                    /// Either length 0 or 1.
+                    /// Has only the first parent.
+                    nodes: []const struct {
+                        oid: []const u8,
+                    },
+                },
+            },
+        },
+
+        pub fn graphql(comptime indent: []const u8, comptime indent_level: comptime_int) []const u8 {
+            return std.fmt.comptimePrint(
+                \\(first: 1) {{
+                \\{1s}{0s}nodes {{
+                \\{1s}{0s}{0s}commit {{
+                \\{1s}{0s}{0s}{0s}parents(first: 1) {{
+                \\{1s}{0s}{0s}{0s}{0s}nodes {{
+                \\{1s}{0s}{0s}{0s}{0s}{0s}oid
+                \\{1s}{0s}{0s}{0s}{0s}}}
+                \\{1s}{0s}{0s}{0s}}}
+                \\{1s}{0s}{0s}}}
+                \\{1s}{0s}}}
+                \\{1s}}}
+            , .{
+                indent,
+                indent ** indent_level,
+            });
+        }
+    },
+
+    /// The first parent of the oldest commit in the PR.
+    /// Null if the PR has no commits or the oldest commit has no parent.
+    /// `baseRefOid` is not equivalent: It tracks the base branch's current tip.
+    pub fn mergeBaseOid(self: @This()) ?[]const u8 {
+        if (self.commits.nodes.len == 0) return null;
+        const first_commit = self.commits.nodes[0].commit;
+        if (first_commit.parents.nodes.len == 0) return null;
+        return first_commit.parents.nodes[0].oid;
+    }
 };
 
 pub fn fetchPullRequestsByIds(
@@ -173,64 +219,31 @@ pub const Commit = struct {
     resourcePath: []const u8,
 
     oid: []const u8,
-};
-
-pub fn fetchCommitsByPullRequestId(allocator: std.mem.Allocator, client: *Client, id: []const u8) !Cloned([]const Commit) {
-    const PageInfo = Client.PageInfo(.backward);
-    var iter = client.pageIterator(
-        allocator,
-        \\query(
-        \\  $id: ID!
-        \\  $cursor: String
-        \\) {
-        \\  node(id: $id) {
-        \\    ... on PullRequest {
-        \\      commits(
-    ++ std.fmt.comptimePrint("last: {d}\n", .{api.page_size}) ++
-        \\        before: $cursor
-        \\      ) {
-    ++ PageInfo.gql ++
-        \\        nodes {
-        \\          commit
-    ++ " " ++ comptime api.graphqlPretty(Commit, "  ", 5) ++ "\n" ++
-        \\        }
-        \\      }
-        \\    }
-        \\  }
-        \\}
-    ,
-        .{ .id = id },
-        struct {
-            node: struct {
-                commits: struct {
-                    pageInfo: PageInfo,
-                    nodes: []const struct {
-                        commit: Commit,
-                    },
-                },
-            },
+    repository: struct {
+        id: types.Id,
+    },
+    parents: struct {
+        /// Either length 0 or 1.
+        nodes: []const struct {
+            id: types.Id,
         },
-        PageInfo.direction,
-    );
-    defer iter.deinit();
 
-    var cloned = try Cloned([]const Commit).init(allocator);
-    errdefer cloned.deinit();
-    const cloned_allocator = cloned.arena.allocator();
-
-    var commits = std.ArrayList(Commit).empty;
-
-    while (try iter.next()) |response| {
-        defer iter.page = response.node.commits.pageInfo;
-
-        try commits.ensureUnusedCapacity(cloned_allocator, response.node.commits.nodes.len);
-        for (response.node.commits.nodes) |node|
-            commits.appendAssumeCapacity(try cloneLeaky(cloned_allocator, node.commit));
-    }
-
-    cloned.value = try commits.toOwnedSlice(cloned_allocator);
-    return cloned;
-}
+        /// Fetches only the first.
+        pub fn graphql(comptime indent: []const u8, comptime indent_level: comptime_int) ?[]const u8 {
+            return std.fmt.comptimePrint(
+                \\(first: {2d}) {{
+                \\{1s}{0s}nodes {{
+                \\{1s}{0s}{0s}id
+                \\{1s}{0s}}}
+                \\{1s}}}
+            , .{
+                indent,
+                indent ** indent_level,
+                1,
+            });
+        }
+    },
+};
 
 pub fn fetchCommitHistoryByRepo(
     allocator: std.mem.Allocator,

@@ -64,7 +64,7 @@ pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.
             .many => @compileError("cannot clone many-item pointer"),
         },
         .array => {
-            const array: Obj = undefined;
+            var array: Obj = undefined;
             for (&array, obj) |*dst, src|
                 dst.* = try cloneLeaky(allocator, src);
             return array;
