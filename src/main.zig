@@ -545,7 +545,7 @@ const Scan = struct {
 
             try Db.queries.Repository.upsert.exec(self.allocator, db_conn, .{ repo.value.id, repo.value.owner.login, repo.value.name });
 
-            std.log.info("/{s}/{s}: scanning for pull requests…", .{ repo_owner, repo_name });
+            std.log.info("/{s}/{s}: scanning pull requests…", .{ repo_owner, repo_name });
 
             const prs_open = try zretry.zretry(api.queries.fetchPullRequestsByRepo, .{
                 self.allocator,
@@ -639,7 +639,7 @@ const Scan = struct {
                         return;
                     };
 
-                    std.log.info("{s}: scanning for commits…", .{pr.resourcePath});
+                    std.log.info("{s}: scanning commits…", .{pr.resourcePath});
 
                     const commits = try zretry.zretry(api.queries.fetchCommitHistoryByRepo, .{
                         self.allocator,
@@ -770,7 +770,7 @@ const Scan = struct {
         repo_id: api.types.Id,
         commit: api.queries.Commit,
     ) !void {
-        std.log.info("{s}: scanning for check suites…", .{commit.resourcePath});
+        std.log.info("{s}: scanning check suites…", .{commit.resourcePath});
 
         const check_suites = try zretry.zretry(api.queries.fetchCheckSuitesByCommitId, .{
             self.allocator,
@@ -807,7 +807,7 @@ const Scan = struct {
                     check_suite.conclusion,
                 });
 
-                std.log.info("{s}: scanning for check runs…", .{check_suite.resourcePath});
+                std.log.info("{s}: scanning check runs…", .{check_suite.resourcePath});
 
                 const check_runs = try zretry.zretry(api.queries.fetchCheckRunsByCheckSuiteId, .{
                     self.allocator,
