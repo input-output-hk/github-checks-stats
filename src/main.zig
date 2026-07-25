@@ -656,11 +656,17 @@ const Scan = struct {
                     try upsertCommits(self.allocator, db_conn, repo.value.id, commits.value[commits_start_idx..]);
 
                     for (commits.value[commits_start_idx..], commits_start_idx..) |commit, commits_idx| {
-                        try self.scanCommitChecks(client, db_conn, retry_opts, repo.value.id, commit);
+                        const commit_changed = try self.scanCommitChecks(client, db_conn, retry_opts, repo.value.id, commit);
+
+                        if (!commit_changed and !self.historical) {
+                            std.log.info("{s}: check suites of commit {d}/{d} have not changed, skipping older commits", .{ pr.resourcePath, commits_idx + 1, commits.value.len });
+                            break;
+                        }
 
                         try self.progress.commit.set(self.allocator, commit.id);
                         std.log.info("{s}: {d}/{d} commits scanned", .{ pr.resourcePath, commits_idx + 1, commits.value.len });
-                    } else self.progress.commit.clear(self.allocator);
+                    }
+                    self.progress.commit.clear(self.allocator);
 
                     try self.progress.pr.set(self.allocator, pr.id);
                     std.log.info("/{s}/{s}: {d}/{d} PRs scanned", .{ repo_owner, repo_name, prev_prs_count + prs_idx + 1, prs_count });
@@ -716,14 +722,22 @@ const Scan = struct {
                     ref.id, repo.value.id, ref.prefix, ref.name, ref.target.oid,
                 });
 
-                for (commits.value[commits_start_idx..commits_len], commits_start_idx..) |commit, idx| {
-                    try self.scanCommitChecks(client, db_conn, retry_opts, repo.value.id, commit);
+                for (commits.value[commits_start_idx..commits_len], commits_start_idx..) |commit, commits_idx| {
+                    const commit_changed = try self.scanCommitChecks(client, db_conn, retry_opts, repo.value.id, commit);
+
+                    if (!commit_changed and !self.historical) {
+                        std.log.info("/{s}/{s}#{s}{s}: check suites of commit {d}/{d} have not changed, skipping older commits", .{
+                            repo_owner, repo_name, ref.prefix, ref.name, commits_idx + 1, commits_len,
+                        });
+                        break;
+                    }
 
                     try self.progress.default_branch_commit.set(self.allocator, commit.id);
                     std.log.info("/{s}/{s}#{s}{s}: {d}/{d} history commits scanned", .{
-                        repo_owner, repo_name, ref.prefix, ref.name, idx + 1, commits_len,
+                        repo_owner, repo_name, ref.prefix, ref.name, commits_idx + 1, commits_len,
                     });
-                } else self.progress.default_branch_commit.clear(self.allocator);
+                }
+                self.progress.default_branch_commit.clear(self.allocator);
             }
 
             self.progress.repos_idx += 1;
@@ -762,6 +776,7 @@ const Scan = struct {
         }
     }
 
+    /// Returns whether any check suites were updated since the last scan.
     fn scanCommitChecks(
         self: *@This(),
         client: *api.Client,
@@ -769,7 +784,7 @@ const Scan = struct {
         retry_opts: zretry.RetryOptions,
         repo_id: api.types.Id,
         commit: api.queries.Commit,
-    ) !void {
+    ) !bool {
         std.log.info("{s}: scanning check suites…", .{commit.resourcePath});
 
         const check_suites = try zretry.zretry(api.queries.fetchCheckSuitesByCommitId, .{
@@ -778,6 +793,8 @@ const Scan = struct {
             commit.id,
         }, retry_opts);
         defer check_suites.deinit();
+
+        var check_suites_changed = false;
 
         const check_suites_start_idx = self.progress.check_suite.findNextLogVanished(api.queries.CheckSuite, check_suites.value);
         for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
@@ -806,6 +823,8 @@ const Scan = struct {
                     check_suite.status,
                     check_suite.conclusion,
                 });
+
+                check_suites_changed = true;
 
                 std.log.info("{s}: scanning check runs…", .{check_suite.resourcePath});
 
@@ -837,6 +856,8 @@ const Scan = struct {
 
             try self.persist(db_conn);
         } else self.progress.check_suite.clear(self.allocator);
+
+        return check_suites_changed;
     }
 };
 
