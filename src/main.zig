@@ -880,7 +880,7 @@ const Scan = struct {
             }, retry_opts);
             defer check_runs.deinit();
 
-            for (check_runs.value, 0..) |check_run, check_runs_idx| {
+            for (check_runs.value) |check_run|
                 try Db.queries.CheckRun.upsert.exec(self.allocator, db_conn, .{
                     check_run.id,
                     check_suite.id,
@@ -892,8 +892,7 @@ const Scan = struct {
                     check_run.conclusion,
                 });
 
-                std.log.info("{s}: {d}/{d} check runs scanned", .{ check_suite.resourcePath, check_runs_idx + 1, check_runs.value.len });
-            }
+            std.log.info("{s}: {d} check runs scanned", .{ check_suite.resourcePath, check_runs.value.len });
         } else std.log.info("{s}: skipping", .{check_suite.resourcePath});
 
         return check_suite_updated;
