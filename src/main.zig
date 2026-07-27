@@ -386,11 +386,10 @@ const Scan = struct {
         prss_idx: usize = 0,
         pr: Anchor = .{},
         commit: Anchor = .{},
-        default_branch_commit: Anchor = .{},
         check_suite: Anchor = .{},
 
         pub fn deinit(self: *const @This(), allocator: std.mem.Allocator) void {
-            inline for (.{ "pr", "commit", "check_suite", "default_branch_commit" }) |anchor|
+            inline for (.{ "pr", "commit", "check_suite" }) |anchor|
                 @field(self, anchor).deinit(allocator);
         }
 
@@ -456,7 +455,6 @@ const Scan = struct {
             .pr,
             .commit,
             .check_suite,
-            .default_branch_commit,
             .updated_at,
         })).query(self.allocator, db_conn, .{
             .{ .items = self.repos },
@@ -472,7 +470,7 @@ const Scan = struct {
                 // Do not free `db_scan` because we move ownership of all of its allocated fields into `scan`.
             } else zqlite_typed.freeStructFromRow(@TypeOf(db_scan), self.allocator, db_scan);
 
-            inline for (.{ "pr", "commit", "check_suite", "default_branch_commit" }) |field| {
+            inline for (.{ "pr", "commit", "check_suite" }) |field| {
                 const anchor = &@field(self.progress, field);
                 // The DB schema and Zig field names are meant to stay in sync.
                 const db_anchor = @field(db_scan, field);
@@ -485,7 +483,7 @@ const Scan = struct {
                     anchor.clear(self.allocator);
             }
 
-            std.log.info("continuing interrupted scan from {f} at repo={d}/{d} prs_batch={d} pr={?s} commit={?s} check_suite={?s} default_branch_commit={?s}", .{
+            std.log.info("continuing interrupted scan from {f} at repo={d}/{d} prs_batch={d} pr={?s} commit={?s} check_suite={?s}", .{
                 db_scan.updated_at,
                 self.progress.repos_idx + 1,
                 self.repos.len,
@@ -493,7 +491,6 @@ const Scan = struct {
                 self.progress.pr.id,
                 self.progress.commit.id,
                 self.progress.check_suite.id,
-                self.progress.default_branch_commit.id,
             });
         }
     }
@@ -503,8 +500,7 @@ const Scan = struct {
             self.progress.prss_idx == 0 and
             self.progress.pr.id == null and
             self.progress.commit.id == null and
-            self.progress.check_suite.id == null and
-            self.progress.default_branch_commit.id == null)
+            self.progress.check_suite.id == null)
             try Db.queries.Scan.delete.exec(self.allocator, db_conn, .{
                 .{ .items = self.repos },
                 self.historical,
@@ -518,7 +514,6 @@ const Scan = struct {
                 self.progress.pr.id,
                 self.progress.commit.id,
                 self.progress.check_suite.id,
-                self.progress.default_branch_commit.id,
             });
     }
 
@@ -662,7 +657,7 @@ const Scan = struct {
         } else self.progress.prss_idx = 0;
 
         if (repo.defaultBranchRef) |ref|
-            try self.scanDefaultBranchRef(client, db_conn, retry_opts, repo, ref);
+            try self.scanRef(client, db_conn, retry_opts, repo, ref);
     }
 
     fn scanPullRequest(
@@ -708,7 +703,7 @@ const Scan = struct {
         self.progress.commit.clear(self.allocator);
     }
 
-    fn scanDefaultBranchRef(
+    fn scanRef(
         self: *@This(),
         client: *api.Client,
         db_conn: zqlite.Conn,
@@ -730,7 +725,7 @@ const Scan = struct {
         }, retry_opts);
         defer commits.deinit();
 
-        const commits_start_idx = self.progress.default_branch_commit.findNextLogVanished(api.queries.Commit, commits.value);
+        const commits_start_idx = self.progress.commit.findNextLogVanished(api.queries.Commit, commits.value);
 
         const commits_len = commits_len: for (commits.value[commits_start_idx..], commits_start_idx..) |commit, idx| {
             const commit_known = if (try Db.queries.Commit.SelectByOid(.initOne(.id)).query(self.allocator, db_conn, .{commit.oid})) |db_commit| known: {
@@ -772,12 +767,12 @@ const Scan = struct {
                 break;
             }
 
-            try self.progress.default_branch_commit.set(self.allocator, commit.id);
+            try self.progress.commit.set(self.allocator, commit.id);
             std.log.info("/{s}/{s}#{s}{s}: {d}/{d} history commits scanned", .{
                 repo.owner.login, repo.name, ref.prefix, ref.name, commits_idx + 1, commits_len,
             });
         }
-        self.progress.default_branch_commit.clear(self.allocator);
+        self.progress.commit.clear(self.allocator);
     }
 
     /// Reverse walk order (oldest first) so the parent foreign key is satisfied at each insert.

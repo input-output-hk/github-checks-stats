@@ -252,7 +252,6 @@ pub const Scan = struct {
     pr: ?types.Id,
     commit: ?types.Id,
     check_suite: ?types.Id,
-    default_branch_commit: ?types.Id,
     updated_at: types.DateTime,
 
     const table = "scan";
