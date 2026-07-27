@@ -824,7 +824,36 @@ const Scan = struct {
 
         const check_suites_start_idx = self.progress.check_suite.findNextLogVanished(api.queries.CheckSuite, check_suites.value);
         for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
-            check_suites_updated |= try self.scanCheckSuite(client, db_conn, retry_opts, repo_id, commit, check_suite);
+            const check_suite_updated = if (try Db.queries.CheckSuite.SelectById(.initOne(.updated_at)).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| check_suite_updated: {
+                defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
+                break :check_suite_updated check_suite.updatedAt.inner.compare(db_check_suite.updated_at.inner) != .equal;
+            } else true;
+
+            check_suites_updated |= check_suite_updated;
+
+            if (!check_suite_updated)
+                std.log.info("{s}: has not changed", .{check_suite.resourcePath});
+
+            if (check_suite_updated or self.historical) {
+                try Db.queries.App.upsert.exec(self.allocator, db_conn, .{
+                    check_suite.app.id,
+                    check_suite.app.slug,
+                    check_suite.app.name,
+                });
+
+                try Db.queries.CheckSuite.upsert.exec(self.allocator, db_conn, .{
+                    check_suite.id,
+                    repo_id,
+                    commit.id,
+                    check_suite.app.id,
+                    check_suite.createdAt,
+                    check_suite.updatedAt,
+                    check_suite.status,
+                    check_suite.conclusion,
+                });
+
+                try self.scanCheckSuite(client, db_conn, retry_opts, check_suite);
+            } else std.log.info("{s}: skipping", .{check_suite.resourcePath});
 
             try self.progress.check_suite.set(self.allocator, check_suite.id);
             std.log.info("{s}: {d}/{d} check suites scanned", .{ commit.resourcePath, check_suites_idx + 1, check_suites.value.len });
@@ -835,67 +864,35 @@ const Scan = struct {
         return check_suites_updated;
     }
 
-    /// Returns whether the check suite was updated since the last scan.
     fn scanCheckSuite(
         self: *@This(),
         client: *api.Client,
         db_conn: zqlite.Conn,
         retry_opts: zretry.RetryOptions,
-        repo_id: api.types.Id,
-        commit: api.queries.Commit,
         check_suite: api.queries.CheckSuite,
-    ) !bool {
-        const check_suite_updated = if (try Db.queries.CheckSuite.SelectById(.initMany(&.{.updated_at})).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| check_suite_updated: {
-            defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
-            break :check_suite_updated check_suite.updatedAt.inner.compare(db_check_suite.updated_at.inner) != .equal;
-        } else true;
+    ) !void {
+        std.log.info("{s}: scanning check runs…", .{check_suite.resourcePath});
 
-        if (!check_suite_updated)
-            std.log.info("{s}: has not changed", .{check_suite.resourcePath});
+        const check_runs = try zretry.zretry(api.queries.fetchCheckRunsByCheckSuiteId, .{
+            self.allocator,
+            client,
+            check_suite.id,
+        }, retry_opts);
+        defer check_runs.deinit();
 
-        if (check_suite_updated or self.historical) {
-            try Db.queries.App.upsert.exec(self.allocator, db_conn, .{
-                check_suite.app.id,
-                check_suite.app.slug,
-                check_suite.app.name,
+        for (check_runs.value) |check_run|
+            try Db.queries.CheckRun.upsert.exec(self.allocator, db_conn, .{
+                check_run.id,
+                check_suite.id,
+                check_run.name,
+                check_run.startedAt,
+                check_run.completedAt,
+                check_run.externalId,
+                check_run.status,
+                check_run.conclusion,
             });
 
-            try Db.queries.CheckSuite.upsert.exec(self.allocator, db_conn, .{
-                check_suite.id,
-                repo_id,
-                commit.id,
-                check_suite.app.id,
-                check_suite.createdAt,
-                check_suite.updatedAt,
-                check_suite.status,
-                check_suite.conclusion,
-            });
-
-            std.log.info("{s}: scanning check runs…", .{check_suite.resourcePath});
-
-            const check_runs = try zretry.zretry(api.queries.fetchCheckRunsByCheckSuiteId, .{
-                self.allocator,
-                client,
-                check_suite.id,
-            }, retry_opts);
-            defer check_runs.deinit();
-
-            for (check_runs.value) |check_run|
-                try Db.queries.CheckRun.upsert.exec(self.allocator, db_conn, .{
-                    check_run.id,
-                    check_suite.id,
-                    check_run.name,
-                    check_run.startedAt,
-                    check_run.completedAt,
-                    check_run.externalId,
-                    check_run.status,
-                    check_run.conclusion,
-                });
-
-            std.log.info("{s}: {d} check runs scanned", .{ check_suite.resourcePath, check_runs.value.len });
-        } else std.log.info("{s}: skipping", .{check_suite.resourcePath});
-
-        return check_suite_updated;
+        std.log.info("{s}: {d} check runs scanned", .{ check_suite.resourcePath, check_runs.value.len });
     }
 };
 
