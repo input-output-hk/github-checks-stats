@@ -90,13 +90,25 @@ pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.
     }
 }
 
-pub fn graphql(comptime T: type) []const u8 {
+pub fn graphql(T: type) []const u8 {
     return graphqlPretty(T, "", 0);
 }
 
-pub fn graphqlPretty(comptime T: type, comptime indent: []const u8, indent_level: comptime_int) []const u8 {
+pub fn graphqlPretty(T: type, comptime indent: []const u8, indent_level: comptime_int) []const u8 {
     const info = @typeInfo(T);
-    if (comptime info != .@"struct") @compileError("cannot derive GraphQL from type \"" ++ @typeName(T) ++ "\"");
+    if (info != .@"struct") @compileError("cannot derive GraphQL from type \"" ++ @typeName(T) ++ "\"");
+
+    if (std.meta.hasFn(T, "graphql")) {
+        if (@typeInfo(@typeInfo(@TypeOf(T.graphql)).@"fn".return_type.?) == .optional)
+            @compileError(@typeName(T) ++ ".graphql() is only allowed to return an optional when in field position");
+
+        const gql = comptime T.graphql(indent, indent_level);
+
+        if (comptime std.mem.trim(u8, gql, &std.ascii.whitespace).len == 0)
+            @compileError(@typeName(T) ++ ".graphql() must not return an empty string or only whitespace");
+
+        return gql;
+    }
 
     comptime var gql: []const u8 = "{\n";
 
@@ -118,8 +130,12 @@ pub fn graphqlPretty(comptime T: type, comptime indent: []const u8, indent_level
             else
                 graphqlPretty(field_graphql_type, indent, field_indent_level);
 
-            if (field_gql) |f_gql|
+            if (field_gql) |f_gql| {
+                if (comptime std.mem.trim(u8, f_gql, &std.ascii.whitespace).len == 0)
+                    @compileError(@typeName(field_graphql_type) ++ ".graphql() must not return an empty string or only whitespace, return null instead");
+
                 gql = gql ++ " " ++ f_gql;
+            }
         }
 
         gql = gql ++ "\n";
@@ -136,6 +152,8 @@ test graphqlPretty {
         \\    baz
         \\    foobar {
         \\      quux
+        \\      quax {
+        \\      }
         \\    }
         \\  }
         \\}
@@ -145,7 +163,38 @@ test graphqlPretty {
             baz: u0,
             foobar: struct {
                 quux: u0,
+                quax: struct {},
             },
         },
+    }, "  ", 0));
+
+    try std.testing.expectEqualStrings(
+        \\{
+        \\  foo {}
+        \\  bar
+        \\}
+    , graphqlPretty(struct {
+        foo: struct {
+            baz: u0,
+
+            pub fn graphql(comptime _: []const u8, comptime _: comptime_int) []const u8 {
+                return "{}";
+            }
+        },
+        bar: struct {
+            baz: u0,
+
+            pub fn graphql(comptime _: []const u8, comptime _: comptime_int) ?[]const u8 {
+                return null;
+            }
+        },
+    }, "  ", 0));
+
+    try std.testing.expectEqualStrings("bar", graphqlPretty(struct {
+        foo: u0,
+
+        pub fn graphql(comptime _: []const u8, comptime _: comptime_int) []const u8 {
+            return "bar";
+        }
     }, "  ", 0));
 }

@@ -231,7 +231,7 @@ pub const Commit = struct {
         },
 
         /// Fetches only the first.
-        pub fn graphql(comptime indent: []const u8, comptime indent_level: comptime_int) ?[]const u8 {
+        pub fn graphql(comptime indent: []const u8, comptime indent_level: comptime_int) []const u8 {
             return std.fmt.comptimePrint(
                 \\(first: {2d}) {{
                 \\{1s}{0s}nodes {{
