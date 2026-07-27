@@ -545,200 +545,7 @@ const Scan = struct {
 
             try Db.queries.Repository.upsert.exec(self.allocator, db_conn, .{ repo.value.id, repo.value.owner.login, repo.value.name });
 
-            std.log.info("/{s}/{s}: scanning pull requests…", .{ repo_owner, repo_name });
-
-            const prs_open = try zretry.zretry(api.queries.fetchPullRequestsByRepo, .{
-                self.allocator,
-                client,
-                repo.value.owner.login,
-                repo.value.name,
-                if (self.historical) null else @as([]const api.types.PullRequestState, &.{.OPEN}),
-            }, retry_opts);
-            defer prs_open.deinit();
-
-            // Some PRs could have been closed since we last fetched
-            // and are hence not included in the response from GitHub.
-            // They are still open in our database though,
-            // so fetch them again to update them in the database.
-            const prs_closed = if (!self.historical) prs_closed: {
-                var prs_db_open = try Db.queries.PullRequest.SelectByRepoAndStates(
-                    .initOne(.id),
-                    .initOne(.OPEN),
-                ).queryIterator(self.allocator, db_conn, .{
-                    repo.value.owner.login,
-                    repo.value.name,
-                });
-                errdefer prs_db_open.deinit();
-
-                var prs_closed_ids = std.ArrayList(api.types.Id).empty;
-                defer {
-                    for (prs_closed_ids.items) |id| self.allocator.free(id);
-                    prs_closed_ids.deinit(self.allocator);
-                }
-
-                while (try prs_db_open.next(self.allocator)) |pr_db_open| {
-                    defer zqlite_typed.freeStructFromRow(@TypeOf(pr_db_open), self.allocator, pr_db_open);
-
-                    // XXX It would be nicer if we could exclude
-                    // the open PRs that we just fetched from the API
-                    // from the DB query using the `NOT IN` operator
-                    // instead of filtering here, but that requires
-                    // passing a runtime-known list of parameters (not supported by zqlite_typed)
-                    // or serializing the list as JSON to pass into the query (ugly).
-                    for (prs_open.value) |pr_open| {
-                        if (std.mem.eql(u8, pr_open.id, pr_db_open.id))
-                            break; // PR is still open.
-                    } else {
-                        const id = try self.allocator.dupe(u8, pr_db_open.id);
-                        errdefer self.allocator.free(id);
-
-                        try prs_closed_ids.append(self.allocator, id);
-                    }
-                }
-
-                try prs_db_open.deinitErr();
-
-                break :prs_closed try zretry.zretry(api.queries.fetchPullRequestsByIds, .{
-                    self.allocator,
-                    client,
-                    prs_closed_ids.items,
-                }, retry_opts);
-            } else null;
-            defer if (prs_closed) |pr| pr.deinit();
-
-            const prss = [_][]const api.queries.PullRequest{
-                prs_open.value,
-                if (prs_closed) |pr| pr.value else &.{},
-            };
-
-            for (prss[self.progress.prss_idx..]) |prs| {
-                const prs_start_idx = if (self.progress.pr.find(api.queries.PullRequest, prs)) |idx| idx + 1 else 0;
-                for (prs[prs_start_idx..]) |pr|
-                    try Db.queries.PullRequest.upsert.exec(self.allocator, db_conn, .{ pr.id, repo.value.id, pr.number, pr.state, pr.headRefOid, pr.mergeBaseOid() });
-            }
-
-            const prs_count = prs_count: {
-                var count: usize = 0;
-                for (prss) |prs|
-                    count += prs.len;
-                break :prs_count count;
-            };
-
-            for (prss[self.progress.prss_idx..], self.progress.prss_idx..) |prs, prss_idx| {
-                const prev_prs_count = prev_prs_count: {
-                    var count: usize = 0;
-                    for (0..prss_idx) |i|
-                        count += prss[i].len;
-                    break :prev_prs_count count;
-                };
-
-                const prs_start_idx = self.progress.pr.findNextLogVanished(api.queries.PullRequest, prs);
-                for (prs[prs_start_idx..], prs_start_idx..) |pr, prs_idx| {
-                    const merge_base_oid = pr.mergeBaseOid() orelse {
-                        std.log.info("{s}: no commits, skipping", .{pr.resourcePath});
-                        return;
-                    };
-
-                    std.log.info("{s}: scanning commits…", .{pr.resourcePath});
-
-                    const commits = try zretry.zretry(api.queries.fetchCommitHistoryByRepo, .{
-                        self.allocator,
-                        client,
-                        repo.value.id,
-                        pr.headRefOid,
-                        &.{merge_base_oid},
-                        @as(usize, @intCast(self.history_limit)),
-                    }, retry_opts);
-                    defer commits.deinit();
-
-                    const commits_start_idx = self.progress.commit.findNextLogVanished(api.queries.Commit, commits.value);
-
-                    try upsertCommits(self.allocator, db_conn, repo.value.id, commits.value[commits_start_idx..]);
-
-                    for (commits.value[commits_start_idx..], commits_start_idx..) |commit, commits_idx| {
-                        const commit_changed = try self.scanCommitChecks(client, db_conn, retry_opts, repo.value.id, commit);
-
-                        if (!commit_changed and !self.historical) {
-                            std.log.info("{s}: check suites of commit {d}/{d} have not changed, skipping older commits", .{ pr.resourcePath, commits_idx + 1, commits.value.len });
-                            break;
-                        }
-
-                        try self.progress.commit.set(self.allocator, commit.id);
-                        std.log.info("{s}: {d}/{d} commits scanned", .{ pr.resourcePath, commits_idx + 1, commits.value.len });
-                    }
-                    self.progress.commit.clear(self.allocator);
-
-                    try self.progress.pr.set(self.allocator, pr.id);
-                    std.log.info("/{s}/{s}: {d}/{d} PRs scanned", .{ repo_owner, repo_name, prev_prs_count + prs_idx + 1, prs_count });
-                } else self.progress.pr.clear(self.allocator);
-
-                self.progress.prss_idx += 1;
-            } else self.progress.prss_idx = 0;
-
-            if (repo.value.defaultBranchRef) |ref| {
-                std.log.info("/{s}/{s}#{s}{s}: scanning history commits…", .{
-                    repo_owner, repo_name, ref.prefix, ref.name,
-                });
-
-                const commits = try zretry.zretry(api.queries.fetchCommitHistoryByRepo, .{
-                    self.allocator,
-                    client,
-                    repo.value.id,
-                    ref.target.oid,
-                    null,
-                    @as(usize, @intCast(self.history_limit)),
-                }, retry_opts);
-                defer commits.deinit();
-
-                const commits_start_idx = self.progress.default_branch_commit.findNextLogVanished(api.queries.Commit, commits.value);
-
-                const commits_len = commits_len: for (commits.value[commits_start_idx..], commits_start_idx..) |commit, idx| {
-                    const commit_known = if (try Db.queries.Commit.SelectByOid(.initOne(.id)).query(self.allocator, db_conn, .{commit.oid})) |db_commit| known: {
-                        zqlite_typed.freeStructFromRow(@TypeOf(db_commit), self.allocator, db_commit);
-                        break :known true;
-                    } else false;
-
-                    if (commit_known) {
-                        std.log.info("/{s}/{s}#{s}{s}: stopping {d} from HEAD at known commit {s}", .{
-                            repo_owner, repo_name, ref.prefix, ref.name, idx, commit.oid,
-                        });
-                        break idx;
-                    }
-                } else {
-                    std.log.warn("/{s}/{s}#{s}{s}: reached history depth limit ({d}), skipping older commits", .{
-                        repo_owner, repo_name, ref.prefix, ref.name, self.history_limit,
-                    });
-                    break :commits_len commits.value.len;
-                };
-
-                // Slicing past `commits_len` so that PR scans don't prevent commit parents from being inserted here.
-                try upsertCommits(self.allocator, db_conn, repo.value.id, commits.value[commits_start_idx..]);
-
-                // The ref's target OID is not a foreign key so we could insert the ref
-                // before the commit it references. Let's pretend it's a foreign key
-                // anyway and insert only once the referenced commit is already in the DB.
-                // Feels cleaner and is prepared in case it does become a foreign key in the future.
-                try Db.queries.Ref.upsert.exec(self.allocator, db_conn, .{
-                    ref.id, repo.value.id, ref.prefix, ref.name, ref.target.oid,
-                });
-
-                for (commits.value[commits_start_idx..commits_len], commits_start_idx..) |commit, commits_idx| {
-                    const commit_changed = try self.scanCommitChecks(client, db_conn, retry_opts, repo.value.id, commit);
-
-                    if (!commit_changed and !self.historical) {
-                        std.log.info("/{s}/{s}#{s}{s}: check suites of commit {d}/{d} have not changed, skipping older commits", .{
-                            repo_owner, repo_name, ref.prefix, ref.name, commits_idx + 1, commits_len,
-                        });
-                        break;
-                    }
-
-                    try self.progress.default_branch_commit.set(self.allocator, commit.id);
-                    std.log.info("/{s}/{s}#{s}{s}: {d}/{d} history commits scanned", .{
-                        repo_owner, repo_name, ref.prefix, ref.name, commits_idx + 1, commits_len,
-                    });
-                }
-                self.progress.default_branch_commit.clear(self.allocator);
-            }
+            try self.scanRepository(client, db_conn, retry_opts, repo.value);
 
             self.progress.repos_idx += 1;
             std.log.info("{d}/{d} repositories scanned", .{ repos_idx + 1, self.repos.len });
@@ -747,6 +554,230 @@ const Scan = struct {
         // All indices and anchors were just set to their zero value,
         // so persisting now will delete the scan from the DB.
         try self.persist(db_conn);
+    }
+
+    fn scanRepository(
+        self: *@This(),
+        client: *api.Client,
+        db_conn: zqlite.Conn,
+        retry_opts: zretry.RetryOptions,
+        repo: api.queries.Repository,
+    ) !void {
+        std.log.info("/{s}/{s}: scanning pull requests…", .{ repo.owner.login, repo.name });
+
+        const prs_open = try zretry.zretry(api.queries.fetchPullRequestsByRepo, .{
+            self.allocator,
+            client,
+            repo.owner.login,
+            repo.name,
+            if (self.historical) null else @as([]const api.types.PullRequestState, &.{.OPEN}),
+        }, retry_opts);
+        defer prs_open.deinit();
+
+        // Some PRs could have been closed since we last fetched
+        // and are hence not included in the response from GitHub.
+        // They are still open in our database though,
+        // so fetch them again to update them in the database.
+        const prs_closed = if (!self.historical) prs_closed: {
+            var prs_db_open = try Db.queries.PullRequest.SelectByRepoAndStates(
+                .initOne(.id),
+                .initOne(.OPEN),
+            ).queryIterator(self.allocator, db_conn, .{
+                repo.owner.login,
+                repo.name,
+            });
+            errdefer prs_db_open.deinit();
+
+            var prs_closed_ids = std.ArrayList(api.types.Id).empty;
+            defer {
+                for (prs_closed_ids.items) |id| self.allocator.free(id);
+                prs_closed_ids.deinit(self.allocator);
+            }
+
+            while (try prs_db_open.next(self.allocator)) |pr_db_open| {
+                defer zqlite_typed.freeStructFromRow(@TypeOf(pr_db_open), self.allocator, pr_db_open);
+
+                // XXX It would be nicer if we could exclude
+                // the open PRs that we just fetched from the API
+                // from the DB query using the `NOT IN` operator
+                // instead of filtering here, but that requires
+                // passing a runtime-known list of parameters (not supported by zqlite_typed)
+                // or serializing the list as JSON to pass into the query (ugly).
+                for (prs_open.value) |pr_open| {
+                    if (std.mem.eql(u8, pr_open.id, pr_db_open.id))
+                        break; // PR is still open.
+                } else {
+                    const id = try self.allocator.dupe(u8, pr_db_open.id);
+                    errdefer self.allocator.free(id);
+
+                    try prs_closed_ids.append(self.allocator, id);
+                }
+            }
+
+            try prs_db_open.deinitErr();
+
+            break :prs_closed try zretry.zretry(api.queries.fetchPullRequestsByIds, .{
+                self.allocator,
+                client,
+                prs_closed_ids.items,
+            }, retry_opts);
+        } else null;
+        defer if (prs_closed) |pr| pr.deinit();
+
+        const prss = [_][]const api.queries.PullRequest{
+            prs_open.value,
+            if (prs_closed) |pr| pr.value else &.{},
+        };
+
+        for (prss[self.progress.prss_idx..]) |prs| {
+            const prs_start_idx = if (self.progress.pr.find(api.queries.PullRequest, prs)) |idx| idx + 1 else 0;
+            for (prs[prs_start_idx..]) |pr|
+                try Db.queries.PullRequest.upsert.exec(self.allocator, db_conn, .{ pr.id, repo.id, pr.number, pr.state, pr.headRefOid, pr.mergeBaseOid() });
+        }
+
+        const prs_count = prs_count: {
+            var count: usize = 0;
+            for (prss) |prs|
+                count += prs.len;
+            break :prs_count count;
+        };
+
+        for (prss[self.progress.prss_idx..], self.progress.prss_idx..) |prs, prss_idx| {
+            const prev_prs_count = prev_prs_count: {
+                var count: usize = 0;
+                for (0..prss_idx) |i|
+                    count += prss[i].len;
+                break :prev_prs_count count;
+            };
+
+            const prs_start_idx = self.progress.pr.findNextLogVanished(api.queries.PullRequest, prs);
+            for (prs[prs_start_idx..], prs_start_idx..) |pr, prs_idx| {
+                try self.scanPullRequest(client, db_conn, retry_opts, repo, pr);
+
+                try self.progress.pr.set(self.allocator, pr.id);
+                std.log.info("/{s}/{s}: {d}/{d} PRs scanned", .{ repo.owner.login, repo.name, prev_prs_count + prs_idx + 1, prs_count });
+            } else self.progress.pr.clear(self.allocator);
+
+            self.progress.prss_idx += 1;
+        } else self.progress.prss_idx = 0;
+
+        if (repo.defaultBranchRef) |ref|
+            try self.scanDefaultBranchRef(client, db_conn, retry_opts, repo, ref);
+    }
+
+    fn scanPullRequest(
+        self: *@This(),
+        client: *api.Client,
+        db_conn: zqlite.Conn,
+        retry_opts: zretry.RetryOptions,
+        repo: api.queries.Repository,
+        pr: api.queries.PullRequest,
+    ) !void {
+        const merge_base_oid = pr.mergeBaseOid() orelse {
+            std.log.info("{s}: no commits, skipping", .{pr.resourcePath});
+            return;
+        };
+
+        std.log.info("{s}: scanning commits…", .{pr.resourcePath});
+
+        const commits = try zretry.zretry(api.queries.fetchCommitHistoryByRepo, .{
+            self.allocator,
+            client,
+            repo.id,
+            pr.headRefOid,
+            merge_base_oid,
+            @as(usize, @intCast(self.history_limit)),
+        }, retry_opts);
+        defer commits.deinit();
+
+        const commits_start_idx = self.progress.commit.findNextLogVanished(api.queries.Commit, commits.value);
+
+        try upsertCommits(self.allocator, db_conn, repo.id, commits.value[commits_start_idx..]);
+
+        for (commits.value[commits_start_idx..], commits_start_idx..) |commit, commits_idx| {
+            const commit_changed = try self.scanCommit(client, db_conn, retry_opts, repo.id, commit);
+
+            if (!commit_changed and !self.historical) {
+                std.log.info("{s}: check suites of commit {d}/{d} have not changed, skipping older commits", .{ pr.resourcePath, commits_idx + 1, commits.value.len });
+                break;
+            }
+
+            try self.progress.commit.set(self.allocator, commit.id);
+            std.log.info("{s}: {d}/{d} commits scanned", .{ pr.resourcePath, commits_idx + 1, commits.value.len });
+        }
+        self.progress.commit.clear(self.allocator);
+    }
+
+    fn scanDefaultBranchRef(
+        self: *@This(),
+        client: *api.Client,
+        db_conn: zqlite.Conn,
+        retry_opts: zretry.RetryOptions,
+        repo: api.queries.Repository,
+        ref: api.queries.Ref,
+    ) !void {
+        std.log.info("/{s}/{s}#{s}{s}: scanning history commits…", .{
+            repo.owner.login, repo.name, ref.prefix, ref.name,
+        });
+
+        const commits = try zretry.zretry(api.queries.fetchCommitHistoryByRepo, .{
+            self.allocator,
+            client,
+            repo.id,
+            ref.target.oid,
+            null,
+            @as(usize, @intCast(self.history_limit)),
+        }, retry_opts);
+        defer commits.deinit();
+
+        const commits_start_idx = self.progress.default_branch_commit.findNextLogVanished(api.queries.Commit, commits.value);
+
+        const commits_len = commits_len: for (commits.value[commits_start_idx..], commits_start_idx..) |commit, idx| {
+            const commit_known = if (try Db.queries.Commit.SelectByOid(.initOne(.id)).query(self.allocator, db_conn, .{commit.oid})) |db_commit| known: {
+                zqlite_typed.freeStructFromRow(@TypeOf(db_commit), self.allocator, db_commit);
+                break :known true;
+            } else false;
+
+            if (commit_known) {
+                std.log.info("/{s}/{s}#{s}{s}: stopping {d} from HEAD at known commit {s}", .{
+                    repo.owner.login, repo.name, ref.prefix, ref.name, idx, commit.oid,
+                });
+                break idx;
+            }
+        } else {
+            std.log.warn("/{s}/{s}#{s}{s}: reached history depth limit ({d}), skipping older commits", .{
+                repo.owner.login, repo.name, ref.prefix, ref.name, self.history_limit,
+            });
+            break :commits_len commits.value.len;
+        };
+
+        // Slicing past `commits_len` so that PR scans don't prevent commit parents from being inserted here.
+        try upsertCommits(self.allocator, db_conn, repo.id, commits.value[commits_start_idx..]);
+
+        // The ref's target OID is not a foreign key so we could insert the ref
+        // before the commit it references. Let's pretend it's a foreign key
+        // anyway and insert only once the referenced commit is already in the DB.
+        // Feels cleaner and is prepared in case it does become a foreign key in the future.
+        try Db.queries.Ref.upsert.exec(self.allocator, db_conn, .{
+            ref.id, repo.id, ref.prefix, ref.name, ref.target.oid,
+        });
+
+        for (commits.value[commits_start_idx..commits_len], commits_start_idx..) |commit, commits_idx| {
+            const commit_changed = try self.scanCommit(client, db_conn, retry_opts, repo.id, commit);
+
+            if (!commit_changed and !self.historical) {
+                std.log.info("/{s}/{s}#{s}{s}: check suites of commit {d}/{d} have not changed, skipping older commits", .{
+                    repo.owner.login, repo.name, ref.prefix, ref.name, commits_idx + 1, commits_len,
+                });
+                break;
+            }
+
+            try self.progress.default_branch_commit.set(self.allocator, commit.id);
+            std.log.info("/{s}/{s}#{s}{s}: {d}/{d} history commits scanned", .{
+                repo.owner.login, repo.name, ref.prefix, ref.name, commits_idx + 1, commits_len,
+            });
+        }
+        self.progress.default_branch_commit.clear(self.allocator);
     }
 
     /// Reverse walk order (oldest first) so the parent foreign key is satisfied at each insert.
@@ -777,7 +808,7 @@ const Scan = struct {
     }
 
     /// Returns whether any check suites were updated since the last scan.
-    fn scanCommitChecks(
+    fn scanCommit(
         self: *@This(),
         client: *api.Client,
         db_conn: zqlite.Conn,
@@ -794,62 +825,11 @@ const Scan = struct {
         }, retry_opts);
         defer check_suites.deinit();
 
-        var check_suites_changed = false;
+        var check_suites_updated = false;
 
         const check_suites_start_idx = self.progress.check_suite.findNextLogVanished(api.queries.CheckSuite, check_suites.value);
         for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
-            const scan_check_runs =
-                self.historical or
-                if (try Db.queries.CheckSuite.SelectById(.initMany(&.{.updated_at})).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| scan_check_runs: {
-                    defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
-
-                    break :scan_check_runs check_suite.updatedAt.inner.compare(db_check_suite.updated_at.inner) != .equal;
-                } else true;
-
-            if (scan_check_runs) {
-                try Db.queries.App.upsert.exec(self.allocator, db_conn, .{
-                    check_suite.app.id,
-                    check_suite.app.slug,
-                    check_suite.app.name,
-                });
-
-                try Db.queries.CheckSuite.upsert.exec(self.allocator, db_conn, .{
-                    check_suite.id,
-                    repo_id,
-                    commit.id,
-                    check_suite.app.id,
-                    check_suite.createdAt,
-                    check_suite.updatedAt,
-                    check_suite.status,
-                    check_suite.conclusion,
-                });
-
-                check_suites_changed = true;
-
-                std.log.info("{s}: scanning check runs…", .{check_suite.resourcePath});
-
-                const check_runs = try zretry.zretry(api.queries.fetchCheckRunsByCheckSuiteId, .{
-                    self.allocator,
-                    client,
-                    check_suite.id,
-                }, retry_opts);
-                defer check_runs.deinit();
-
-                for (check_runs.value, 0..) |check_run, check_runs_idx| {
-                    try Db.queries.CheckRun.upsert.exec(self.allocator, db_conn, .{
-                        check_run.id,
-                        check_suite.id,
-                        check_run.name,
-                        check_run.startedAt,
-                        check_run.completedAt,
-                        check_run.externalId,
-                        check_run.status,
-                        check_run.conclusion,
-                    });
-
-                    std.log.info("{s}: {d}/{d} check runs scanned", .{ check_suite.resourcePath, check_runs_idx + 1, check_runs.value.len });
-                }
-            } else std.log.info("{s}: has not changed, skipping", .{check_suite.resourcePath});
+            check_suites_updated |= try self.scanCheckSuite(client, db_conn, retry_opts, repo_id, commit, check_suite);
 
             try self.progress.check_suite.set(self.allocator, check_suite.id);
             std.log.info("{s}: {d}/{d} check suites scanned", .{ commit.resourcePath, check_suites_idx + 1, check_suites.value.len });
@@ -857,7 +837,71 @@ const Scan = struct {
             try self.persist(db_conn);
         } else self.progress.check_suite.clear(self.allocator);
 
-        return check_suites_changed;
+        return check_suites_updated;
+    }
+
+    /// Returns whether the check suite was updated since the last scan.
+    fn scanCheckSuite(
+        self: *@This(),
+        client: *api.Client,
+        db_conn: zqlite.Conn,
+        retry_opts: zretry.RetryOptions,
+        repo_id: api.types.Id,
+        commit: api.queries.Commit,
+        check_suite: api.queries.CheckSuite,
+    ) !bool {
+        const check_suite_updated = if (try Db.queries.CheckSuite.SelectById(.initMany(&.{.updated_at})).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| check_suite_updated: {
+            defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
+            break :check_suite_updated check_suite.updatedAt.inner.compare(db_check_suite.updated_at.inner) != .equal;
+        } else true;
+
+        if (!check_suite_updated)
+            std.log.info("{s}: has not changed", .{check_suite.resourcePath});
+
+        if (check_suite_updated or self.historical) {
+            try Db.queries.App.upsert.exec(self.allocator, db_conn, .{
+                check_suite.app.id,
+                check_suite.app.slug,
+                check_suite.app.name,
+            });
+
+            try Db.queries.CheckSuite.upsert.exec(self.allocator, db_conn, .{
+                check_suite.id,
+                repo_id,
+                commit.id,
+                check_suite.app.id,
+                check_suite.createdAt,
+                check_suite.updatedAt,
+                check_suite.status,
+                check_suite.conclusion,
+            });
+
+            std.log.info("{s}: scanning check runs…", .{check_suite.resourcePath});
+
+            const check_runs = try zretry.zretry(api.queries.fetchCheckRunsByCheckSuiteId, .{
+                self.allocator,
+                client,
+                check_suite.id,
+            }, retry_opts);
+            defer check_runs.deinit();
+
+            for (check_runs.value, 0..) |check_run, check_runs_idx| {
+                try Db.queries.CheckRun.upsert.exec(self.allocator, db_conn, .{
+                    check_run.id,
+                    check_suite.id,
+                    check_run.name,
+                    check_run.startedAt,
+                    check_run.completedAt,
+                    check_run.externalId,
+                    check_run.status,
+                    check_run.conclusion,
+                });
+
+                std.log.info("{s}: {d}/{d} check runs scanned", .{ check_suite.resourcePath, check_runs_idx + 1, check_runs.value.len });
+            }
+        } else std.log.info("{s}: skipping", .{check_suite.resourcePath});
+
+        return check_suite_updated;
     }
 };
 

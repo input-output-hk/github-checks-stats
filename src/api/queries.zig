@@ -13,14 +13,16 @@ pub const Repository = struct {
         login: []const u8,
     },
     name: []const u8,
-    defaultBranchRef: ?struct {
-        id: types.Id,
-        prefix: []const u8,
-        name: []const u8,
-        target: struct {
-            oid: []const u8,
-        },
-    } = null,
+    defaultBranchRef: ?Ref = null,
+};
+
+pub const Ref = struct {
+    id: types.Id,
+    prefix: []const u8,
+    name: []const u8,
+    target: struct {
+        oid: []const u8,
+    },
 };
 
 pub fn fetchRepoByFullName(
