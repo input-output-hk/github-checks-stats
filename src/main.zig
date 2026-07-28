@@ -18,7 +18,7 @@ pub fn main(init: std.process.Init) !void {
         db: @FieldType(Config.Serve, "db") = std.meta.fieldInfo(Config.Serve, .db).defaultValue().?,
 
         pub const meta = .{
-            .usage_summary = "[OPTION]... <serve|scan|watch> [VERB_OPTION]... [REPO]...",
+            .usage_summary = "[OPTION]... <serve|scan|watch> [VERB_OPTION]... [REPO[#BRANCH]]...",
             .full_text =
             \\Collect statistics about GitHub Checks
             \\
@@ -147,7 +147,7 @@ pub fn main(init: std.process.Init) !void {
             .historical = scan.historical orelse true,
             .history_limit = scan.@"history-limit",
             .metrics_listen = scan.@"metrics-listen",
-            .repos = options.positionals,
+            .targets = options.positionals,
         } },
         .watch => |watch| .{ .watch = .{
             .db = options.options.db,
@@ -157,7 +157,7 @@ pub fn main(init: std.process.Init) !void {
             .historical = watch.historical orelse false,
             .history_limit = watch.@"history-limit",
             .metrics_listen = watch.@"metrics-listen",
-            .repos = options.positionals,
+            .targets = options.positionals,
             .interval_s = watch.interval,
         } },
     });
@@ -184,7 +184,7 @@ pub const Config = union(enum) {
             historical: bool,
             history_limit: u32 = 250,
             metrics_listen: ?[]const u8 = null,
-            repos: []const []const u8,
+            targets: []const []const u8,
         },
     });
 
@@ -306,9 +306,9 @@ pub fn start(
 
     var scan: Scan = .{
         .allocator = allocator,
-        .repos = switch (config) {
+        .targets = switch (config) {
             .serve => unreachable,
-            inline .scan, .watch => |mode| mode.repos,
+            inline .scan, .watch => |mode| mode.targets,
         },
         .historical = switch (config) {
             .serve => unreachable,
@@ -375,14 +375,14 @@ pub fn start(
 const Scan = struct {
     allocator: std.mem.Allocator,
 
-    repos: []const []const u8,
+    targets: []const []const u8,
     historical: bool,
     history_limit: u32,
 
     progress: Progress = .{},
 
     const Progress = struct {
-        repos_idx: usize = 0,
+        targets_idx: usize = 0,
         prss_idx: usize = 0,
         pr: Anchor = .{},
         commit: Anchor = .{},
@@ -450,17 +450,17 @@ const Scan = struct {
 
     pub fn loadFromDb(self: *@This(), db_conn: zqlite.Conn) !void {
         if (try Db.queries.Scan.SelectById(.initMany(&.{
-            .repos_idx,
+            .targets_idx,
             .prss_idx,
             .pr,
             .commit,
             .check_suite,
             .updated_at,
         })).query(self.allocator, db_conn, .{
-            .{ .items = self.repos },
+            .{ .items = self.targets },
             self.historical,
         })) |db_scan| {
-            self.progress.repos_idx = @intCast(db_scan.repos_idx);
+            self.progress.targets_idx = @intCast(db_scan.targets_idx);
             self.progress.prss_idx = @intCast(db_scan.prss_idx);
 
             // Couldn't help myself, had to prematurely optimize this to prevent allocations.
@@ -485,8 +485,8 @@ const Scan = struct {
 
             std.log.info("continuing interrupted scan from {f} at repo={d}/{d} prs_batch={d} pr={?s} commit={?s} check_suite={?s}", .{
                 db_scan.updated_at,
-                self.progress.repos_idx + 1,
-                self.repos.len,
+                self.progress.targets_idx + 1,
+                self.targets.len,
                 self.progress.prss_idx + 1,
                 self.progress.pr.id,
                 self.progress.commit.id,
@@ -496,20 +496,20 @@ const Scan = struct {
     }
 
     fn persist(self: @This(), db_conn: zqlite.Conn) !void {
-        if (self.progress.repos_idx == 0 and
+        if (self.progress.targets_idx == 0 and
             self.progress.prss_idx == 0 and
             self.progress.pr.id == null and
             self.progress.commit.id == null and
             self.progress.check_suite.id == null)
             try Db.queries.Scan.delete.exec(self.allocator, db_conn, .{
-                .{ .items = self.repos },
+                .{ .items = self.targets },
                 self.historical,
             })
         else
             try Db.queries.Scan.upsert.exec(self.allocator, db_conn, .{
-                .{ .items = self.repos },
+                .{ .items = self.targets },
                 self.historical,
-                @intCast(self.progress.repos_idx),
+                @intCast(self.progress.targets_idx),
                 @intCast(self.progress.prss_idx),
                 self.progress.pr.id,
                 self.progress.commit.id,
@@ -518,17 +518,30 @@ const Scan = struct {
     }
 
     pub fn scan(self: *@This(), client: *api.Client, db_conn: zqlite.Conn, retry_opts: zretry.RetryOptions) !void {
-        for (self.repos[self.progress.repos_idx..], self.progress.repos_idx..) |repo_full, repos_idx| {
-            const repo_owner, const repo_name = repo: {
-                errdefer std.log.err("malformed repository \"{s}\", must be of form \"foo/bar\"", .{repo_full});
-                var iter = std.mem.splitScalar(u8, repo_full, '/');
-                const owner = iter.next() orelse return error.MalformedRepository;
-                const name = iter.next() orelse return error.MalformedRepository;
+        for (self.targets[self.progress.targets_idx..], self.progress.targets_idx..) |target, targets_idx| {
+            const repo_owner, const repo_name, const branch = target: {
+                errdefer std.log.err("malformed target \"{s}\", must be of form \"owner/name\" or \"owner/name#branch\"", .{target});
+
+                var iter = std.mem.splitScalar(u8, target, '/');
+                const owner = iter.next() orelse return error.MalformedTarget;
+                const name_branch = iter.next() orelse return error.MalformedTarget;
                 std.debug.assert(iter.next() == null);
-                break :repo .{ owner, name };
+
+                iter = std.mem.splitScalar(u8, name_branch, '#');
+                const name = iter.next() orelse return error.MalformedTarget;
+                const branch = iter.next();
+                if (branch != null)
+                    std.debug.assert(iter.next() == null);
+
+                break :target .{ owner, name, branch };
             };
 
-            std.log.info("/{s}/{s}: fetching repository…", .{ repo_owner, repo_name });
+            std.log.info("/{s}/{s}{s}{s}: fetching repository…", .{
+                repo_owner,
+                repo_name,
+                if (branch) |_| "#" else "",
+                if (branch) |b| b else "",
+            });
 
             const repo = try zretry.zretry(api.queries.fetchRepoByFullName, .{
                 self.allocator,
@@ -540,11 +553,22 @@ const Scan = struct {
 
             try Db.queries.Repository.upsert.exec(self.allocator, db_conn, .{ repo.value.id, repo.value.owner.login, repo.value.name });
 
-            try self.scanRepository(client, db_conn, retry_opts, repo.value);
+            if (branch) |b| {
+                const ref = try zretry.zretry(api.queries.fetchRef, .{
+                    self.allocator,
+                    client,
+                    repo.value.owner.login,
+                    repo.value.name,
+                    b,
+                }, retry_opts);
+                defer ref.deinit();
 
-            self.progress.repos_idx += 1;
-            std.log.info("{d}/{d} repositories scanned", .{ repos_idx + 1, self.repos.len });
-        } else self.progress.repos_idx = 0;
+                try self.scanRef(client, db_conn, retry_opts, repo.value, ref.value);
+            } else try self.scanRepository(client, db_conn, retry_opts, repo.value);
+
+            self.progress.targets_idx += 1;
+            std.log.info("{d}/{d} targets scanned", .{ targets_idx + 1, self.targets.len });
+        } else self.progress.targets_idx = 0;
 
         // All indices and anchors were just set to their zero value,
         // so persisting now will delete the scan from the DB.

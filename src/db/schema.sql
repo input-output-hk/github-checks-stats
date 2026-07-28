@@ -106,15 +106,15 @@ CREATE INDEX "idx_check_run_suite" ON "check_run" ("suite");
 -- application state
 
 CREATE TABLE "scan" (
-	"repos" TEXT NOT NULL,
+	"targets" TEXT NOT NULL,
 	"historical" INT NOT NULL CHECK ("historical" IN (TRUE, FALSE)),
-	"repos_idx" INT NOT NULL,
+	"targets_idx" INT NOT NULL,
 	"prss_idx" INT NOT NULL,
 	"pr" TEXT REFERENCES "pull_request",
 	"commit" TEXT REFERENCES "commit",
 	"check_suite" TEXT REFERENCES "check_suite",
 	"updated_at" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-	PRIMARY KEY ("repos", "historical")
+	PRIMARY KEY ("targets", "historical")
 ) STRICT, WITHOUT ROWID;
 
 CREATE TRIGGER "scan_updated_at"
@@ -122,5 +122,5 @@ AFTER UPDATE ON "scan"
 FOR EACH ROW
 BEGIN
 	UPDATE "scan" SET "updated_at" = CURRENT_TIMESTAMP
-	WHERE "repos" = NEW."repos" AND "historical" = NEW."historical";
+	WHERE "targets" = NEW."targets" AND "historical" = NEW."historical";
 END;

@@ -245,9 +245,9 @@ pub const CheckRun = struct {
 };
 
 pub const Scan = struct {
-    repos: SeparatedStrings('\t'),
+    targets: SeparatedStrings('\t'),
     historical: bool,
-    repos_idx: i64,
+    targets_idx: i64,
     prss_idx: i64,
     pr: ?types.Id,
     commit: ?types.Id,
@@ -263,7 +263,7 @@ pub const Scan = struct {
 
     pub const insert = SimpleInsert(table, utils.meta.SubStruct(@This(), app_columns));
     pub const upsert = SimpleUpsert(table, utils.meta.SubStruct(@This(), app_columns), true);
-    pub const delete = SimpleDelete(table, utils.meta.SubStruct(@This(), .initMany(&.{ .repos, .historical })));
+    pub const delete = SimpleDelete(table, utils.meta.SubStruct(@This(), .initMany(&.{ .targets, .historical })));
 
     pub const delete_expired = Exec(
         std.fmt.comptimePrint(
@@ -278,7 +278,7 @@ pub const Scan = struct {
     );
 
     pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initMany(&.{ .repos, .historical }));
+        return SimpleSelectBy(table, @This(), columns, .initMany(&.{ .targets, .historical }));
     }
 };
 

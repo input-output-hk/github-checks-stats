@@ -25,6 +25,47 @@ pub const Ref = struct {
     },
 };
 
+pub fn fetchRef(
+    allocator: std.mem.Allocator,
+    client: *Client,
+    owner: []const u8,
+    name: []const u8,
+    ref: []const u8,
+) !Cloned(Ref) {
+    const payload = try std.json.Stringify.valueAlloc(allocator, .{
+        .query = "" ++
+            \\query(
+            \\  $owner: String!
+            \\  $name: String!
+            \\  $qualifiedName: String!
+            \\) {
+            \\  repository(
+            \\    owner: $owner
+            \\    name: $name
+            \\  ) {
+            \\    ref(qualifiedName: $qualifiedName)
+        ++ " " ++ comptime api.graphqlPretty(Ref, "  ", 3) ++ "\n" ++
+            \\  }
+            \\}
+        ,
+        .variables = .{
+            .owner = owner,
+            .name = name,
+            .qualifiedName = ref,
+        },
+    }, .{});
+    defer allocator.free(payload);
+
+    const response = try client.query(allocator, struct {
+        repository: ?struct {
+            ref: ?Ref,
+        },
+    }, payload);
+    defer response.deinit();
+
+    return try clone(allocator, response.value.repository.?.ref.?);
+}
+
 pub fn fetchRepoByFullName(
     allocator: std.mem.Allocator,
     client: *Client,
