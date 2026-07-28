@@ -752,7 +752,7 @@ const Scan = struct {
         const commits_start_idx = self.progress.commit.findNextLogVanished(api.queries.Commit, commits.value);
 
         const commits_len = commits_len: for (commits.value[commits_start_idx..], commits_start_idx..) |commit, idx| {
-            const commit_known = if (try Db.queries.Commit.SelectByOid(.initOne(.id)).query(self.allocator, db_conn, .{commit.oid})) |db_commit| known: {
+            const commit_known = if (try Db.queries.Commit.SelectByRepoAndOid(.initOne(.id)).query(self.allocator, db_conn, .{ repo.id, commit.oid })) |db_commit| known: {
                 zqlite_typed.freeStructFromRow(@TypeOf(db_commit), self.allocator, db_commit);
                 break :known true;
             } else false;
@@ -821,7 +821,7 @@ const Scan = struct {
             };
 
             try Db.queries.Commit.upsert.exec(allocator, db_conn, .{
-                commit.id, commit.oid, repo_id, parent_id,
+                commit.id, repo_id, commit.oid, parent_id,
             });
         }
     }

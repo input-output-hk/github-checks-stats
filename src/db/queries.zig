@@ -121,8 +121,8 @@ pub const PullRequest = struct {
 
 pub const Commit = struct {
     id: types.Id,
-    oid: []const u8,
     repository: types.Id,
+    oid: []const u8,
     parent: ?types.Id,
 
     const table = "commit";
@@ -134,23 +134,23 @@ pub const Commit = struct {
     /// Preserves `parent` if it was already set.
     pub const upsert = Exec(
         std.fmt.comptimePrint(
-            \\INSERT INTO {[commit]f} ({[id]f}, {[oid]f}, {[repository]f}, {[parent]f})
+            \\INSERT INTO {[commit]f} ({[id]f}, {[repository]f}, {[oid]f}, {[parent]f})
             \\VALUES (?, ?, ?, ?)
             \\ON CONFLICT ({[id]f}) DO UPDATE SET
-            \\  {[oid]f} = excluded.{[oid]f},
             \\  {[repository]f} = excluded.{[repository]f},
+            \\  {[oid]f} = excluded.{[oid]f},
             \\  {[parent]f} = COALESCE(excluded.{[parent]f}, {[commit]f}.{[parent]f})
         , .{
             .commit = fmtIdentifier(table),
             .id = fmtIdentifier(@tagName(Column.id)),
-            .oid = fmtIdentifier(@tagName(Column.oid)),
             .repository = fmtIdentifier(@tagName(Column.repository)),
+            .oid = fmtIdentifier(@tagName(Column.oid)),
             .parent = fmtIdentifier(@tagName(Column.parent)),
         }),
         struct {
             types.Id,
-            []const u8,
             types.Id,
+            []const u8,
             ?types.Id,
         },
     );
@@ -159,8 +159,8 @@ pub const Commit = struct {
         return SimpleSelectBy(table, @This(), columns, .initOne(.id));
     }
 
-    pub fn SelectByOid(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initOne(.oid));
+    pub fn SelectByRepoAndOid(columns: std.enums.EnumSet(Column)) type {
+        return SimpleSelectBy(table, @This(), columns, .initMany(&.{ .repository, .oid }));
     }
 };
 

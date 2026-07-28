@@ -23,9 +23,10 @@ CREATE TABLE "pull_request" (
 
 CREATE TABLE "commit" (
 	"id" TEXT PRIMARY KEY,
-	"oid" TEXT NOT NULL UNIQUE,
 	"repository" TEXT NOT NULL REFERENCES "repository",
-	"parent" TEXT REFERENCES "commit"
+	"oid" TEXT NOT NULL,
+	"parent" TEXT REFERENCES "commit",
+	UNIQUE ("repository", "oid")
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE "ref" (
