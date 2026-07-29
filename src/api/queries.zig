@@ -262,9 +262,6 @@ pub const Commit = struct {
     resourcePath: []const u8,
 
     oid: []const u8,
-    repository: struct {
-        id: types.Id,
-    },
     parents: struct {
         /// Either length 0 or 1.
         nodes: []const struct {
