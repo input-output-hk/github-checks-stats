@@ -90,19 +90,32 @@ pub fn cloneLeaky(allocator: std.mem.Allocator, obj: anytype) std.mem.Allocator.
     }
 }
 
-pub fn graphql(T: type) []const u8 {
+pub fn graphqlMinimal(T: type) []const u8 {
     return graphqlPretty(T, "", 0);
 }
 
 pub fn graphqlPretty(T: type, comptime indent: []const u8, indent_level: comptime_int) []const u8 {
+    return graphql(T, .{ .indent = indent, .indent_level = indent_level });
+}
+
+pub const GraphqlOptions = struct {
+    indent: []const u8,
+    indent_level: comptime_int = 0,
+    custom: struct {
+        root: bool = true,
+        fields: bool = true,
+    } = .{},
+};
+
+pub fn graphql(T: type, options: GraphqlOptions) []const u8 {
     const info = @typeInfo(T);
     if (info != .@"struct") @compileError("cannot derive GraphQL from type \"" ++ @typeName(T) ++ "\"");
 
-    if (std.meta.hasFn(T, "graphql")) {
+    if (options.custom.root and std.meta.hasFn(T, "graphql")) {
         if (@typeInfo(@typeInfo(@TypeOf(T.graphql)).@"fn".return_type.?) == .optional)
             @compileError(@typeName(T) ++ ".graphql() is only allowed to return an optional when in field position");
 
-        const gql = comptime T.graphql(indent, indent_level);
+        const gql = comptime T.graphql(options);
 
         if (comptime std.mem.trim(u8, gql, &std.ascii.whitespace).len == 0)
             @compileError(@typeName(T) ++ ".graphql() must not return an empty string or only whitespace");
@@ -113,22 +126,25 @@ pub fn graphqlPretty(T: type, comptime indent: []const u8, indent_level: comptim
     comptime var gql: []const u8 = "{\n";
 
     inline for (info.@"struct".fields) |field| {
-        const field_indent_level = indent_level + 1;
+        const field_indent_level = options.indent_level + 1;
 
-        gql = gql ++ indent ** field_indent_level ++ field.name;
+        gql = gql ++ options.indent ** field_indent_level ++ field.name;
 
         if (@as(?type, switch (@typeInfo(field.type)) {
             .@"struct" => field.type,
-            .optional => |optional| if (@typeInfo(optional.child) == .@"struct")
-                optional.child
+            inline .optional, .pointer => |case| if (@typeInfo(case.child) == .@"struct")
+                case.child
             else
                 null,
             else => null,
         })) |field_graphql_type| {
-            const field_gql: ?[]const u8 = comptime if (std.meta.hasFn(field_graphql_type, "graphql"))
-                field_graphql_type.graphql(indent, field_indent_level)
+            comptime var opts = options;
+            opts.indent_level = field_indent_level;
+
+            const field_gql: ?[]const u8 = comptime if (options.custom.fields and std.meta.hasFn(field_graphql_type, "graphql"))
+                field_graphql_type.graphql(opts)
             else
-                graphqlPretty(field_graphql_type, indent, field_indent_level);
+                graphql(field_graphql_type, opts);
 
             if (field_gql) |f_gql| {
                 if (comptime std.mem.trim(u8, f_gql, &std.ascii.whitespace).len == 0)
@@ -141,7 +157,7 @@ pub fn graphqlPretty(T: type, comptime indent: []const u8, indent_level: comptim
         gql = gql ++ "\n";
     }
 
-    return gql ++ indent ** indent_level ++ "}";
+    return gql ++ options.indent ** options.indent_level ++ "}";
 }
 
 test graphqlPretty {
@@ -177,14 +193,14 @@ test graphqlPretty {
         foo: struct {
             baz: u0,
 
-            pub fn graphql(comptime _: []const u8, comptime _: comptime_int) []const u8 {
+            pub fn graphql(comptime _: GraphqlOptions) []const u8 {
                 return "{}";
             }
         },
         bar: struct {
             baz: u0,
 
-            pub fn graphql(comptime _: []const u8, comptime _: comptime_int) ?[]const u8 {
+            pub fn graphql(comptime _: GraphqlOptions) ?[]const u8 {
                 return null;
             }
         },
@@ -193,7 +209,7 @@ test graphqlPretty {
     try std.testing.expectEqualStrings("bar", graphqlPretty(struct {
         foo: u0,
 
-        pub fn graphql(comptime _: []const u8, comptime _: comptime_int) []const u8 {
+        pub fn graphql(comptime _: GraphqlOptions) []const u8 {
             return "bar";
         }
     }, "  ", 0));

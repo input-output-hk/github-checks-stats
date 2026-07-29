@@ -427,10 +427,10 @@ pub fn PageInfo(paginate_direction: PaginateDirection) type {
         pub const direction = paginate_direction;
 
         /// The minimal GraphQL for a field called `pageInfo` with the `graphql()` shape.
-        pub const gql = "pageInfo " ++ api.graphql(@This());
+        pub const gql = "pageInfo " ++ api.graphqlMinimal(@This());
 
-        pub fn graphql(comptime indent: []const u8, comptime indent_level: comptime_int) []const u8 {
-            return api.graphqlPretty(SelfNonVoid, indent, indent_level);
+        pub fn graphql(comptime options: api.GraphqlOptions) []const u8 {
+            return api.graphql(SelfNonVoid, options);
         }
 
         pub fn hasFollowingPagePtr(self: *@This()) *bool {

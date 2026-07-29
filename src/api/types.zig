@@ -6,6 +6,8 @@ const std = @import("std");
 
 const zeit = @import("zeit");
 
+const api = @import("../api.zig");
+
 pub const DateTime = struct {
     inner: Inner,
 
@@ -25,7 +27,7 @@ pub const DateTime = struct {
         return fromIso8601(iso) catch return error.UnexpectedToken;
     }
 
-    pub fn graphql(comptime _: []const u8, _: comptime_int) ?[]const u8 {
+    pub fn graphql(comptime _: api.GraphqlOptions) ?[]const u8 {
         return null;
     }
 

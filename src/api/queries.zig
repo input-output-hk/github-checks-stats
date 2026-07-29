@@ -123,27 +123,22 @@ pub const PullRequest = struct {
                     nodes: []const struct {
                         oid: []const u8,
                     },
+
+                    pub fn graphql(options: api.GraphqlOptions) []const u8 {
+                        var opts = options;
+                        opts.custom.root = false;
+
+                        return "(first: 1) " ++ api.graphql(@This(), opts);
+                    }
                 },
             },
         },
 
-        pub fn graphql(comptime indent: []const u8, comptime indent_level: comptime_int) []const u8 {
-            return std.fmt.comptimePrint(
-                \\(first: 1) {{
-                \\{1s}{0s}nodes {{
-                \\{1s}{0s}{0s}commit {{
-                \\{1s}{0s}{0s}{0s}parents(first: 1) {{
-                \\{1s}{0s}{0s}{0s}{0s}nodes {{
-                \\{1s}{0s}{0s}{0s}{0s}{0s}oid
-                \\{1s}{0s}{0s}{0s}{0s}}}
-                \\{1s}{0s}{0s}{0s}}}
-                \\{1s}{0s}{0s}}}
-                \\{1s}{0s}}}
-                \\{1s}}}
-            , .{
-                indent,
-                indent ** indent_level,
-            });
+        pub fn graphql(options: api.GraphqlOptions) []const u8 {
+            var opts = options;
+            opts.custom.root = false;
+
+            return "(first: 1) " ++ api.graphql(@This(), opts);
         }
     },
 
