@@ -16,6 +16,45 @@ pub const Repository = struct {
     defaultBranchRef: ?Ref = null,
 };
 
+pub fn fetchRepoByFullName(
+    allocator: std.mem.Allocator,
+    client: *Client,
+    owner: []const u8,
+    name: []const u8,
+) !Cloned(Repository) {
+    const payload = try std.json.Stringify.valueAlloc(allocator, .{
+        .query = "" ++
+            \\query(
+            \\  $owner: String!
+            \\  $name: String!
+            \\) {
+            \\  repository(
+            \\    owner: $owner
+            \\    name: $name
+            \\  )
+        ++ " " ++ comptime api.graphqlPretty(Repository, "  ", 3) ++ "\n" ++
+            \\}
+        ,
+        .variables = .{
+            .owner = owner,
+            .name = name,
+        },
+    }, .{});
+    defer allocator.free(payload);
+
+    const response = try client.query(allocator, struct {
+        // Optional because there could be no such repository.
+        // GitHub will respond with an error,
+        // causing this call to return an error,
+        // but also with this JSON field set to null
+        // which still needs to parse properly.
+        repository: ?Repository,
+    }, payload);
+    defer response.deinit();
+
+    return try clone(allocator, response.value.repository.?);
+}
+
 pub const Ref = struct {
     id: types.Id,
     prefix: []const u8,
@@ -64,45 +103,6 @@ pub fn fetchRef(
     defer response.deinit();
 
     return try clone(allocator, response.value.repository.?.ref.?);
-}
-
-pub fn fetchRepoByFullName(
-    allocator: std.mem.Allocator,
-    client: *Client,
-    owner: []const u8,
-    name: []const u8,
-) !Cloned(Repository) {
-    const payload = try std.json.Stringify.valueAlloc(allocator, .{
-        .query = "" ++
-            \\query(
-            \\  $owner: String!
-            \\  $name: String!
-            \\) {
-            \\  repository(
-            \\    owner: $owner
-            \\    name: $name
-            \\  )
-        ++ " " ++ comptime api.graphqlPretty(Repository, "  ", 3) ++ "\n" ++
-            \\}
-        ,
-        .variables = .{
-            .owner = owner,
-            .name = name,
-        },
-    }, .{});
-    defer allocator.free(payload);
-
-    const response = try client.query(allocator, struct {
-        // Optional because there could be no such repository.
-        // GitHub will respond with an error,
-        // causing this call to return an error,
-        // but also with this JSON field set to null
-        // which still needs to parse properly.
-        repository: ?Repository,
-    }, payload);
-    defer response.deinit();
-
-    return try clone(allocator, response.value.repository.?);
 }
 
 pub const PullRequest = struct {
