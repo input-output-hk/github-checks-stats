@@ -799,31 +799,30 @@ const Scan = struct {
         self.progress.commit.clear(self.allocator);
     }
 
-    /// Reverse walk order (oldest first) so the parent foreign key is satisfied at each insert.
     fn upsertCommits(
         allocator: std.mem.Allocator,
         db_conn: zqlite.Conn,
         repo_id: api.types.Id,
         commits: []const api.queries.Commit,
     ) !void {
-        var iter = std.mem.reverseIterator(commits);
-        while (iter.next()) |commit| {
-            const parent_id: ?api.types.Id = parent_id: {
-                if (commit.parents.nodes.len == 0) break :parent_id null;
-
-                const parent_id = commit.parents.nodes[0].id;
-                if (try Db.queries.Commit.SelectById(.initOne(.id)).query(allocator, db_conn, .{parent_id})) |row| {
-                    zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
-                    break :parent_id parent_id;
-                }
-
-                break :parent_id null;
-            };
-
+        for (commits) |commit|
             try Db.queries.Commit.upsert.exec(allocator, db_conn, .{
-                commit.id, repo_id, commit.oid, parent_id,
+                commit.id, repo_id, commit.oid,
             });
-        }
+
+        // Insert parents after the commits so the foreign keys work.
+        for (commits) |commit|
+            for (commit.parents.nodes, 0..) |parent, idx| {
+                // Skip if we don't have the parent.
+                if (try Db.queries.Commit.SelectById(.initOne(.id)).query(allocator, db_conn, .{parent.id})) |row|
+                    zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row)
+                else
+                    continue;
+
+                try Db.queries.Commit.Parent.upsert.exec(allocator, db_conn, .{
+                    commit.id, idx, parent.id,
+                });
+            };
     }
 
     /// Returns whether any check suites were updated since the last scan.

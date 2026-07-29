@@ -123,37 +123,13 @@ pub const Commit = struct {
     id: types.Id,
     repository: types.Id,
     oid: []const u8,
-    parent: ?types.Id,
 
     const table = "commit";
 
     pub const Column = std.meta.FieldEnum(@This());
 
     pub const insert = SimpleInsert(table, @This());
-
-    /// Preserves `parent` if it was already set.
-    pub const upsert = Exec(
-        std.fmt.comptimePrint(
-            \\INSERT INTO {[commit]f} ({[id]f}, {[repository]f}, {[oid]f}, {[parent]f})
-            \\VALUES (?, ?, ?, ?)
-            \\ON CONFLICT ({[id]f}) DO UPDATE SET
-            \\  {[repository]f} = excluded.{[repository]f},
-            \\  {[oid]f} = excluded.{[oid]f},
-            \\  {[parent]f} = COALESCE(excluded.{[parent]f}, {[commit]f}.{[parent]f})
-        , .{
-            .commit = fmtIdentifier(table),
-            .id = fmtIdentifier(@tagName(Column.id)),
-            .repository = fmtIdentifier(@tagName(Column.repository)),
-            .oid = fmtIdentifier(@tagName(Column.oid)),
-            .parent = fmtIdentifier(@tagName(Column.parent)),
-        }),
-        struct {
-            types.Id,
-            types.Id,
-            []const u8,
-            ?types.Id,
-        },
-    );
+    pub const upsert = SimpleUpsert(table, @This(), false);
 
     pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
         return SimpleSelectBy(table, @This(), columns, .initOne(.id));
@@ -162,6 +138,23 @@ pub const Commit = struct {
     pub fn SelectByRepoAndOid(columns: std.enums.EnumSet(Column)) type {
         return SimpleSelectBy(table, @This(), columns, .initMany(&.{ .repository, .oid }));
     }
+
+    pub const Parent = struct {
+        commit: types.Id,
+        index: usize,
+        parent: types.Id,
+
+        const table = "commit_parent";
+
+        pub const Column = std.meta.FieldEnum(@This());
+
+        pub const insert = SimpleInsert(@This().table, @This());
+        pub const upsert = SimpleUpsert(@This().table, @This(), false);
+
+        pub fn SelectById(columns: std.enums.EnumSet(@This().Column)) type {
+            return SimpleSelectBy(@This().table, @This(), columns, .initMany(&.{ .commit, .index }));
+        }
+    };
 };
 
 pub const Ref = struct {
@@ -454,19 +447,32 @@ pub const timeToFix = Query(
         \\      s.repository,
         \\      s.branch,
         \\      s.base_oid,
-        \\      c.{[commit_id]f}     AS commit_id,
-        \\      c.{[commit_parent]f} AS parent,
-        \\      0                    AS position
+        \\      c.{[commit_id]f}  AS commit_id,
+        \\      cp.{[cp_parent]f} AS parent,
+        \\      0                 AS position
         \\    FROM seeds s
         \\    JOIN {[commit]f} c ON
         \\      c.{[commit_repository]f} = s.repository
         \\      AND c.{[commit_oid]f} = s.head_oid
         \\      -- Guard: a PR with head == base has no commits.
         \\      AND (s.base_oid IS NULL OR c.{[commit_oid]f} != s.base_oid)
+        \\    LEFT JOIN {[cp]f} cp ON
+        \\      cp.{[cp_commit]f} = c.{[commit_id]f}
+        \\      AND cp.{[cp_index]f} = 0
         \\    UNION ALL
-        \\    SELECT h.seed_id, h.repository, h.branch, h.base_oid, c.{[commit_id]f}, c.{[commit_parent]f}, h.position + 1
+        \\    SELECT
+        \\      h.seed_id,
+        \\      h.repository,
+        \\      h.branch,
+        \\      h.base_oid,
+        \\      c.{[commit_id]f},
+        \\      cp.{[cp_parent]f},
+        \\      h.position + 1
         \\    FROM history h
         \\    JOIN {[commit]f} c ON c.{[commit_id]f} = h.parent
+        \\    LEFT JOIN {[cp]f} cp ON
+        \\      cp.{[cp_commit]f} = c.{[commit_id]f}
+        \\      AND cp.{[cp_index]f} = 0
         \\    WHERE (h.base_oid IS NULL OR c.{[commit_oid]f} != h.base_oid)
         \\      -- Guard against unlimited walk due to broken parent commit chain.
         \\      AND h.position < {[history_limit]d}
@@ -476,7 +482,10 @@ pub const timeToFix = Query(
         .commit_id = fmtIdentifier(@tagName(Commit.Column.id)),
         .commit_oid = fmtIdentifier(@tagName(Commit.Column.oid)),
         .commit_repository = fmtIdentifier(@tagName(Commit.Column.repository)),
-        .commit_parent = fmtIdentifier(@tagName(Commit.Column.parent)),
+        .cp = fmtIdentifier(Commit.Parent.table),
+        .cp_commit = fmtIdentifier(@tagName(Commit.Parent.Column.commit)),
+        .cp_index = fmtIdentifier(@tagName(Commit.Parent.Column.index)),
+        .cp_parent = fmtIdentifier(@tagName(Commit.Parent.Column.parent)),
         .ref = fmtIdentifier(Ref.table),
         .ref_id = fmtIdentifier(@tagName(Ref.Column.id)),
         .ref_repository = fmtIdentifier(@tagName(Ref.Column.repository)),

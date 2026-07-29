@@ -25,8 +25,15 @@ CREATE TABLE "commit" (
 	"id" TEXT PRIMARY KEY,
 	"repository" TEXT NOT NULL REFERENCES "repository",
 	"oid" TEXT NOT NULL,
-	"parent" TEXT REFERENCES "commit",
 	UNIQUE ("repository", "oid")
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE "commit_parent" (
+	"commit" TEXT NOT NULL REFERENCES "commit",
+	"index" INT NOT NULL CHECK ("index" >= 0),
+	"parent" TEXT NOT NULL REFERENCES "commit",
+	PRIMARY KEY ("commit", "index"),
+	UNIQUE ("commit", "parent")
 ) STRICT, WITHOUT ROWID;
 
 CREATE TABLE "ref" (

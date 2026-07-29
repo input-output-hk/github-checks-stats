@@ -258,23 +258,20 @@ pub const Commit = struct {
 
     oid: []const u8,
     parents: struct {
-        /// Either length 0 or 1.
         nodes: []const struct {
             id: types.Id,
+            oid: []const u8,
         },
+        totalCount: usize,
 
-        /// Fetches only the first.
-        pub fn graphql(comptime indent: []const u8, comptime indent_level: comptime_int) []const u8 {
-            return std.fmt.comptimePrint(
-                \\(first: {2d}) {{
-                \\{1s}{0s}nodes {{
-                \\{1s}{0s}{0s}id
-                \\{1s}{0s}}}
-                \\{1s}}}
-            , .{
-                indent,
-                indent ** indent_level,
-                1,
+        /// Fetches only the first page.
+        pub fn graphql(options: api.GraphqlOptions) []const u8 {
+            var opts = options;
+            opts.custom.root = false;
+
+            return std.fmt.comptimePrint("(first: {d}) {s}", .{
+                api.page_size,
+                api.graphql(@This(), opts),
             });
         }
     },
