@@ -10,7 +10,7 @@ CREATE TABLE "repository" (
 CREATE TABLE "pull_request" (
 	"id" TEXT PRIMARY KEY,
 	"repository" TEXT NOT NULL REFERENCES "repository",
-	"number" INTEGER NOT NULL,
+	"number" INTEGER NOT NULL CHECK ("number" > 0),
 	"state" TEXT NOT NULL CHECK ("state" IN (
 		'CLOSED',
 		'MERGED',
@@ -109,8 +109,8 @@ CREATE INDEX "idx_check_run_suite" ON "check_run" ("suite");
 CREATE TABLE "scan" (
 	"targets" TEXT NOT NULL,
 	"historical" INT NOT NULL CHECK ("historical" IN (TRUE, FALSE)),
-	"targets_idx" INT NOT NULL,
-	"prss_idx" INT NOT NULL,
+	"targets_idx" INT NOT NULL CHECK ("targets_idx" >= 0),
+	"prss_idx" INT NOT NULL CHECK ("prss_idx" >= 0),
 	"pr" TEXT REFERENCES "pull_request",
 	"commit" TEXT REFERENCES "commit",
 	"check_suite" TEXT REFERENCES "check_suite",
