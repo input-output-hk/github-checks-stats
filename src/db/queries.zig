@@ -132,11 +132,11 @@ pub const Commit = struct {
     pub const upsert = SimpleUpsert(table, @This(), false);
 
     pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initOne(.id));
+        return SimpleSelectBy(table, @This(), columns, .initOne(.id), false);
     }
 
     pub fn SelectByRepoAndOid(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initMany(&.{ .repository, .oid }));
+        return SimpleSelectBy(table, @This(), columns, .initMany(&.{ .repository, .oid }), false);
     }
 
     pub const Parent = struct {
@@ -211,7 +211,7 @@ pub const CheckSuite = struct {
     pub const upsert = SimpleUpsert(table, @This(), true);
 
     pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initOne(.id));
+        return SimpleSelectBy(table, @This(), columns, .initOne(.id), false);
     }
 };
 
@@ -271,7 +271,7 @@ pub const Scan = struct {
     );
 
     pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initMany(&.{ .targets, .historical }));
+        return SimpleSelectBy(table, @This(), columns, .initMany(&.{ .targets, .historical }), false);
     }
 };
 

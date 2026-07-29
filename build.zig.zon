@@ -13,12 +13,12 @@
             .hash = "zeit-0.9.0-5I6bk2m9AgBSMH8-L6rYJkwuQAyhXplnfxnvTSGzVHUR",
         },
         .zqlite = .{
-            .url = "git+https://github.com/karlseguin/zqlite.zig#5ac4cabe95a6d7faa7baf0da8057a8e6e8a227a1",
-            .hash = "zqlite-0.0.1-RWLaY64xnAAxsD2YNT8QqPMJUuaFv2GOzFRR4aGypJv3",
+            .url = "git+https://github.com/karlseguin/zqlite.zig#a9c1cd3657315306856ddf4a8a28a11b10fd5a9d",
+            .hash = "zqlite-0.0.1-RWLaYyc7nABTzVzEpEMPi3qD8xJHi0a2ycNgL73XyEdt",
         },
         .zqlite_typed = .{
-            .url = "git+https://github.com/dermetfan/zqlite-typed.zig#8bbaaa134d66d29c379c438bfbc134fb899b06d5",
-            .hash = "zqlite_typed-0.0.0-la1GaGxvAACanpwCwh8X97rL7GA1KxMs2z6_Mai9VdKT",
+            .url = "git+https://github.com/dermetfan/zqlite-typed.zig#3c3c3e338c5d89b2565f44438c33a2a51176e3b8",
+            .hash = "zqlite_typed-0.0.0-la1GaN9zAAD1Rd_jF_Fi0aXKLM0m1epdAoQ2PheHBVY4",
         },
         .utils = .{
             .url = "git+https://github.com/dermetfan/utils.zig#973a007fcd13977cbbac008007432e4d96aea9b5",

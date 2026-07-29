@@ -457,8 +457,8 @@ const Scan = struct {
             .check_suite,
             .updated_at,
         })).query(self.allocator, db_conn, .{
-            .{ .items = self.targets },
-            self.historical,
+            .targets = .{ .items = self.targets },
+            .historical = self.historical,
         })) |db_scan| {
             self.progress.targets_idx = @intCast(db_scan.targets_idx);
             self.progress.prss_idx = @intCast(db_scan.prss_idx);
@@ -502,18 +502,18 @@ const Scan = struct {
             self.progress.commit.id == null and
             self.progress.check_suite.id == null)
             try Db.queries.Scan.delete.exec(self.allocator, db_conn, .{
-                .{ .items = self.targets },
-                self.historical,
+                .targets = .{ .items = self.targets },
+                .historical = self.historical,
             })
         else
             try Db.queries.Scan.upsert.exec(self.allocator, db_conn, .{
-                .{ .items = self.targets },
-                self.historical,
-                @intCast(self.progress.targets_idx),
-                @intCast(self.progress.prss_idx),
-                self.progress.pr.id,
-                self.progress.commit.id,
-                self.progress.check_suite.id,
+                .targets = .{ .items = self.targets },
+                .historical = self.historical,
+                .targets_idx = @intCast(self.progress.targets_idx),
+                .prss_idx = @intCast(self.progress.prss_idx),
+                .pr = self.progress.pr.id,
+                .commit = self.progress.commit.id,
+                .check_suite = self.progress.check_suite.id,
             });
     }
 
@@ -551,7 +551,11 @@ const Scan = struct {
             }, retry_opts);
             defer repo.deinit();
 
-            try Db.queries.Repository.upsert.exec(self.allocator, db_conn, .{ repo.value.id, repo.value.owner.login, repo.value.name });
+            try Db.queries.Repository.upsert.exec(self.allocator, db_conn, .{
+                .id = repo.value.id,
+                .owner = repo.value.owner.login,
+                .name = repo.value.name,
+            });
 
             if (branch) |b| {
                 const ref = try zretry.zretry(api.queries.fetchRef, .{
@@ -651,7 +655,14 @@ const Scan = struct {
         for (prss[self.progress.prss_idx..]) |prs| {
             const prs_start_idx = if (self.progress.pr.find(api.queries.PullRequest, prs)) |idx| idx + 1 else 0;
             for (prs[prs_start_idx..]) |pr|
-                try Db.queries.PullRequest.upsert.exec(self.allocator, db_conn, .{ pr.id, repo.id, pr.number, pr.state, pr.headRefOid, pr.mergeBaseOid() });
+                try Db.queries.PullRequest.upsert.exec(self.allocator, db_conn, .{
+                    .id = pr.id,
+                    .repository = repo.id,
+                    .number = pr.number,
+                    .state = pr.state,
+                    .head_ref_oid = pr.headRefOid,
+                    .merge_base_oid = pr.mergeBaseOid(),
+                });
         }
 
         const prs_count = prs_count: {
@@ -752,7 +763,10 @@ const Scan = struct {
         const commits_start_idx = self.progress.commit.findNextLogVanished(api.queries.Commit, commits.value);
 
         const commits_len = commits_len: for (commits.value[commits_start_idx..], commits_start_idx..) |commit, idx| {
-            const commit_known = if (try Db.queries.Commit.SelectByRepoAndOid(.initOne(.id)).query(self.allocator, db_conn, .{ repo.id, commit.oid })) |db_commit| known: {
+            const commit_known = if (try Db.queries.Commit.SelectByRepoAndOid(.initOne(.id)).query(self.allocator, db_conn, .{
+                .repository = repo.id,
+                .oid = commit.oid,
+            })) |db_commit| known: {
                 zqlite_typed.freeStructFromRow(@TypeOf(db_commit), self.allocator, db_commit);
                 break :known true;
             } else false;
@@ -778,7 +792,11 @@ const Scan = struct {
         // anyway and insert only once the referenced commit is already in the DB.
         // Feels cleaner and is prepared in case it does become a foreign key in the future.
         try Db.queries.Ref.upsert.exec(self.allocator, db_conn, .{
-            ref.id, repo.id, ref.prefix, ref.name, ref.target.oid,
+            .id = ref.id,
+            .repository = repo.id,
+            .prefix = ref.prefix,
+            .name = ref.name,
+            .target_oid = ref.target.oid,
         });
 
         for (commits.value[commits_start_idx..commits_len], commits_start_idx..) |commit, commits_idx| {
@@ -807,20 +825,24 @@ const Scan = struct {
     ) !void {
         for (commits) |commit|
             try Db.queries.Commit.upsert.exec(allocator, db_conn, .{
-                commit.id, repo_id, commit.oid,
+                .id = commit.id,
+                .repository = repo_id,
+                .oid = commit.oid,
             });
 
         // Insert parents after the commits so the foreign keys work.
         for (commits) |commit|
             for (commit.parents.nodes, 0..) |parent, idx| {
                 // Skip if we don't have the parent.
-                if (try Db.queries.Commit.SelectById(.initOne(.id)).query(allocator, db_conn, .{parent.id})) |row|
+                if (try Db.queries.Commit.SelectById(.initOne(.id)).query(allocator, db_conn, .{ .id = parent.id })) |row|
                     zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row)
                 else
                     continue;
 
                 try Db.queries.Commit.Parent.upsert.exec(allocator, db_conn, .{
-                    commit.id, idx, parent.id,
+                    .commit = commit.id,
+                    .index = idx,
+                    .parent = parent.id,
                 });
             };
     }
@@ -847,7 +869,9 @@ const Scan = struct {
 
         const check_suites_start_idx = self.progress.check_suite.findNextLogVanished(api.queries.CheckSuite, check_suites.value);
         for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
-            const check_suite_updated = if (try Db.queries.CheckSuite.SelectById(.initOne(.updated_at)).query(self.allocator, db_conn, .{check_suite.id})) |db_check_suite| check_suite_updated: {
+            const check_suite_updated = if (try Db.queries.CheckSuite.SelectById(.initOne(.updated_at)).query(self.allocator, db_conn, .{
+                .id = check_suite.id,
+            })) |db_check_suite| check_suite_updated: {
                 defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
                 break :check_suite_updated check_suite.updatedAt.inner.compare(db_check_suite.updated_at.inner) != .equal;
             } else true;
@@ -859,20 +883,20 @@ const Scan = struct {
 
             if (check_suite_updated or self.historical) {
                 try Db.queries.App.upsert.exec(self.allocator, db_conn, .{
-                    check_suite.app.id,
-                    check_suite.app.slug,
-                    check_suite.app.name,
+                    .id = check_suite.app.id,
+                    .slug = check_suite.app.slug,
+                    .name = check_suite.app.name,
                 });
 
                 try Db.queries.CheckSuite.upsert.exec(self.allocator, db_conn, .{
-                    check_suite.id,
-                    repo_id,
-                    commit.id,
-                    check_suite.app.id,
-                    check_suite.createdAt,
-                    check_suite.updatedAt,
-                    check_suite.status,
-                    check_suite.conclusion,
+                    .id = check_suite.id,
+                    .repository = repo_id,
+                    .commit = commit.id,
+                    .app = check_suite.app.id,
+                    .created_at = check_suite.createdAt,
+                    .updated_at = check_suite.updatedAt,
+                    .status = check_suite.status,
+                    .conclusion = check_suite.conclusion,
                 });
 
                 try self.scanCheckSuite(client, db_conn, retry_opts, check_suite);
@@ -905,14 +929,14 @@ const Scan = struct {
 
         for (check_runs.value) |check_run|
             try Db.queries.CheckRun.upsert.exec(self.allocator, db_conn, .{
-                check_run.id,
-                check_suite.id,
-                check_run.name,
-                check_run.startedAt,
-                check_run.completedAt,
-                check_run.externalId,
-                check_run.status,
-                check_run.conclusion,
+                .id = check_run.id,
+                .suite = check_suite.id,
+                .name = check_run.name,
+                .started_at = check_run.startedAt,
+                .completed_at = check_run.completedAt,
+                .external_id = check_run.externalId,
+                .status = check_run.status,
+                .conclusion = check_run.conclusion,
             });
 
         std.log.info("{s}: {d} check runs scanned", .{ check_suite.resourcePath, check_runs.value.len });
