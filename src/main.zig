@@ -908,6 +908,8 @@ const Scan = struct {
             try self.persist(db_conn);
         } else self.progress.check_suite.clear(self.allocator);
 
+        try self.persist(db_conn);
+
         return check_suites_updated;
     }
 
