@@ -343,7 +343,7 @@ pub fn start(
         .scan => while (true) {
             scan.scan(&client, db_conn, retry_opts) catch |err| switch (err) {
                 error.RateLimited => {
-                    const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
+                    const duration = client.rate_limit.?.delay().?.fromNow(io);
                     std.log.warn("rate limited; continuing in {f}", .{duration});
                     try std.Io.sleep(io, duration, .real);
                     continue;
@@ -357,7 +357,7 @@ pub fn start(
             while (true) {
                 scan.scan(&client, db_conn, retry_opts) catch |err| switch (err) {
                     error.RateLimited => {
-                        const duration = std.Io.Timestamp.now(io, .real).durationTo(client.rate_limit_reset.?);
+                        const duration = client.rate_limit.?.delay().?.fromNow(io);
                         std.log.warn("rate limited; continuing in {f}", .{duration});
                         try std.Io.sleep(io, duration, .real);
                         continue;

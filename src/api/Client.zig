@@ -13,8 +13,83 @@ endpoint: std.Uri,
 user_agent: ?[]const u8,
 authorization: ?[]const u8,
 
-/// When the rate limit resets (UTC).
-rate_limit_reset: ?std.Io.Timestamp = null,
+/// Non-null after `parseResponse()`.
+rate_limit: ?RateLimit = null,
+
+/// https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#checking-the-status-of-your-primary-rate-limit
+pub const RateLimit = struct {
+    /// Value of the `Retry-After` header.
+    /// HTTP also allows a date but GitHub always responds with a duration.
+    /// https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#exceeding-the-rate-limit
+    retry_after: ?std.Io.Duration,
+
+    /// Value of the `x-ratelimit-limit` header.
+    limit: Points,
+    /// Value of the `x-ratelimit-remaining` header.
+    remaining: Points,
+    /// Value of the `x-ratelimit-used` header.
+    used: Points,
+    /// When the rate limit resets (UTC).
+    /// Value of the `x-ratelimit-reset` header.
+    reset: std.Io.Timestamp,
+
+    /// https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#primary-rate-limit
+    pub const Points = u16;
+
+    pub const Delay = union(enum) {
+        timestamp: std.Io.Timestamp,
+        duration: std.Io.Duration,
+
+        pub fn fromNow(self: @This(), io: std.Io) std.Io.Duration {
+            return switch (self) {
+                .timestamp => |timestamp| std.Io.Timestamp.now(io, .real).durationTo(timestamp),
+                .duration => |duration| duration,
+            };
+        }
+    };
+
+    /// https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#exceeding-the-rate-limit
+    pub fn delay(self: @This()) ?Delay {
+        return if (self.retry_after) |retry_after|
+            .{ .duration = retry_after }
+        else if (self.remaining == 0)
+            .{ .timestamp = self.reset }
+        else
+            null;
+    }
+
+    const FromHeadersError = std.fmt.ParseIntError || error{MissingHeader};
+
+    fn fromHeaders(headers: *std.http.HeaderIterator) FromHeadersError!@This() {
+        var retry_after: @FieldType(@This(), "retry_after") = null;
+
+        var limit: ?@FieldType(@This(), "limit") = null;
+        var remaining: ?@FieldType(@This(), "remaining") = null;
+        var used: ?@FieldType(@This(), "used") = null;
+        var reset: ?@FieldType(@This(), "reset") = null;
+
+        while (headers.next()) |header| {
+            if (std.ascii.eqlIgnoreCase(header.name, "Retry-After"))
+                retry_after = .fromSeconds(try std.fmt.parseInt(i64, header.value, 10))
+            else if (std.ascii.eqlIgnoreCase(header.name, "x-ratelimit-limit"))
+                limit = try std.fmt.parseInt(Points, header.value, 10)
+            else if (std.ascii.eqlIgnoreCase(header.name, "x-ratelimit-remaining"))
+                remaining = try std.fmt.parseInt(Points, header.value, 10)
+            else if (std.ascii.eqlIgnoreCase(header.name, "x-ratelimit-used"))
+                used = try std.fmt.parseInt(Points, header.value, 10)
+            else if (std.ascii.eqlIgnoreCase(header.name, "x-ratelimit-reset"))
+                reset = std.Io.Timestamp.fromNanoseconds(try std.fmt.parseInt(i96, header.value, 10) * std.time.ns_per_s);
+        }
+
+        return .{
+            .retry_after = retry_after,
+            .limit = limit orelse return error.MissingHeader,
+            .remaining = remaining orelse return error.MissingHeader,
+            .used = used orelse return error.MissingHeader,
+            .reset = reset orelse return error.MissingHeader,
+        };
+    }
+};
 
 pub fn deinit(self: *@This()) void {
     self.client.deinit();
@@ -94,25 +169,16 @@ pub fn request(self: *@This()) std.http.Client.RequestError!std.http.Client.Requ
 
 pub const ParseResponseError =
     std.http.Client.FetchError ||
+    RateLimit.FromHeadersError ||
     std.json.ParseError(std.json.Scanner) ||
     error{ QueryFailed, RateLimited };
 
-/// If `error.RateLimited` is returned, `rate_limit_reset` is non-null.
+/// If `error.RateLimited` is returned, `rate_limit` is non-null.
 pub fn parseResponse(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, response: *std.http.Client.Response) ParseResponseError!api.Cloned(Data) {
     {
-        // https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#exceeding-the-rate-limit
         // We need to read headers now as they are invalidated once the response body is initialized.
-        self.rate_limit_reset = null;
         var headers = response.head.iterateHeaders();
-        while (headers.next()) |header| {
-            if (std.ascii.eqlIgnoreCase(header.name, "retry-after")) {
-                const duration_secs = try std.fmt.parseInt(i64, header.value, 10);
-                self.rate_limit_reset = std.Io.Timestamp.now(self.client.io, .real).addDuration(.fromSeconds(duration_secs));
-            } else if (std.ascii.eqlIgnoreCase(header.name, "x-ratelimit-reset")) {
-                const timestamp_secs = try std.fmt.parseInt(i96, header.value, 10);
-                self.rate_limit_reset = std.Io.Timestamp.fromNanoseconds(timestamp_secs * std.time.ns_per_s);
-            }
-        }
+        self.rate_limit = try .fromHeaders(&headers);
     }
 
     var response_body = std.Io.Writer.Allocating.init(allocator);
@@ -183,9 +249,7 @@ pub fn parseResponse(self: *@This(), allocator: std.mem.Allocator, comptime Data
         }
     }
     if (rate_limited) {
-        if (self.rate_limit_reset == null)
-            self.rate_limit_reset = std.Io.Timestamp.now(self.client.io, .real).addDuration(.fromSeconds(std.time.s_per_min));
-        std.debug.assert(self.rate_limit_reset != null);
+        std.debug.assert(self.rate_limit != null);
         return error.RateLimited;
     }
     for (parsed.value.errors) |err| {
