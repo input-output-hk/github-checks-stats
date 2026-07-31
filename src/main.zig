@@ -960,6 +960,8 @@ fn serveGetMetrics(ctx: ServerContext, req: *httpz.Request, res: *httpz.Response
 
     res.content_type = .TEXT;
     try ctx.metrics.write(res.writer());
+
+    try httpz.writeMetrics(res.writer());
 }
 
 test {
