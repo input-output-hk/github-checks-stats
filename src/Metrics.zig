@@ -2,18 +2,22 @@ const std = @import("std");
 
 const m = @import("metrics");
 const utils = @import("utils");
+const zqlite = @import("zqlite");
+const zqlite_typed = @import("zqlite-typed");
 
-const types = @import("api.zig").types;
-const db_queries = @import("Db.zig").queries;
+const api = @import("api.zig");
+const Db = @import("Db.zig");
 
 pull_requests: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.Repo, struct {
-    state: types.PullRequestState,
+    state: api.types.PullRequestState,
 } })),
 check_runs: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, struct {
-    state: db_queries.CheckState.Flat,
+    state: Db.queries.CheckState.Flat,
 } })),
 branch_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, Labels.Branch }), &time_to_fix_buckets),
 pull_request_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo }), &time_to_fix_buckets),
+
+client: api.Client.Metrics,
 
 const time_to_fix_buckets = [_]u64{
     5 * std.time.s_per_min,
@@ -36,7 +40,7 @@ const time_to_fix_buckets = [_]u64{
 };
 
 const Labels = struct {
-    pub const App = struct { app: types.Id };
+    pub const App = struct { app: api.types.Id };
     pub const Repo = struct { repo: []const u8 };
     pub const Branch = struct { branch: []const u8 };
 };
@@ -62,21 +66,24 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
         .pull_request_time_to_fix = try .init(allocator, io, "pull_request_time_to_fix_seconds", .{
             .help = "Duration from an app's first failing commit's check run to first successful commit's check run on a pull request",
         }, opts),
+        .client = .init(opts),
     };
 }
 
 pub fn write(self: *const @This(), writer: *std.Io.Writer) !void {
-    try m.write(self, writer);
+    try m.write(&.{
+        self.pull_requests,
+        self.check_runs,
+        self.branch_time_to_fix,
+        self.pull_request_time_to_fix,
+    }, writer);
+
+    try self.client.write(writer);
 }
 
 const Metrics = @This();
 
 pub const Scrape = struct {
-    const zqlite = @import("zqlite");
-    const zqlite_typed = @import("zqlite-typed");
-
-    const Db = @import("Db.zig");
-
     allocator: std.mem.Allocator,
     mutex: std.Io.Mutex = .init,
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const m = @import("metrics");
 const utils = @import("utils");
 
 const api = @import("../api.zig");
@@ -15,6 +16,8 @@ authorization: ?[]const u8,
 
 /// Non-null after `parseResponse()`.
 rate_limit: ?RateLimit = null,
+
+metrics: ?*Metrics,
 
 /// https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#checking-the-status-of-your-primary-rate-limit
 pub const RateLimit = struct {
@@ -91,6 +94,53 @@ pub const RateLimit = struct {
     }
 };
 
+pub const Metrics = struct {
+    rate_limit_retry_after: m.Histogram(u16, &.{
+        5,
+        15,
+        30,
+        std.time.s_per_min,
+        2 * std.time.s_per_min,
+        5 * std.time.s_per_min,
+        15 * std.time.s_per_min,
+        30 * std.time.s_per_min,
+        1 * std.time.s_per_hour,
+        2 * std.time.s_per_hour,
+    }),
+
+    rate_limit_limit: m.Gauge(RateLimit.Points),
+    rate_limit_remaining: m.Gauge(RateLimit.Points),
+    rate_limit_used: m.Gauge(RateLimit.Points),
+    rate_limit_reset: m.Gauge(i64),
+
+    pub fn init(comptime opts: m.RegistryOpts) @This() {
+        return .{
+            .rate_limit_retry_after = .init("rate_limit_retry_after_seconds", .{
+                .help = "The value of the Retry-After header",
+            }, opts),
+
+            // Help text taken from:
+            // https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api#checking-the-status-of-your-primary-rate-limit
+            .rate_limit_limit = .init("rate_limit_limit", .{
+                .help = "The maximum number of points that you can use per hour",
+            }, opts),
+            .rate_limit_remaining = .init("rate_limit_remaining", .{
+                .help = "The number of points remaining in the current rate limit window",
+            }, opts),
+            .rate_limit_used = .init("rate_limit_used", .{
+                .help = "The number of points you have used in the current rate limit window",
+            }, opts),
+            .rate_limit_reset = .init("rate_limit_reset_timestamp_seconds", .{
+                .help = "The time at which the current rate limit window resets, in UTC epoch seconds",
+            }, opts),
+        };
+    }
+
+    pub fn write(self: *const @This(), writer: *std.Io.Writer) !void {
+        try m.write(self, writer);
+    }
+};
+
 pub fn deinit(self: *@This()) void {
     self.client.deinit();
     self.arena.deinit();
@@ -108,7 +158,7 @@ pub fn init(
     environ_map: *const std.process.Environ.Map,
     user_agent: ?[]const u8,
     token: ?[]const u8,
-    comptime metric_opts: m.RegistryOpts,
+    metrics: ?*Metrics,
 ) InitError!@This() {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
@@ -134,6 +184,7 @@ pub fn init(
         .endpoint = try std.Uri.parse("https://api.github.com/graphql"),
         .user_agent = user_agent,
         .authorization = authorization,
+        .metrics = metrics,
     };
 }
 
@@ -185,6 +236,15 @@ pub fn parseResponse(self: *@This(), allocator: std.mem.Allocator, comptime Data
         // We need to read headers now as they are invalidated once the response body is initialized.
         var headers = response.head.iterateHeaders();
         self.rate_limit = try .fromHeaders(&headers);
+    }
+
+    if (self.metrics) |metrics| {
+        if (self.rate_limit.?.retry_after) |retry_after|
+            metrics.rate_limit_retry_after.observe(@intCast(retry_after.toSeconds()));
+        metrics.rate_limit_limit.set(self.rate_limit.?.limit);
+        metrics.rate_limit_remaining.set(self.rate_limit.?.remaining);
+        metrics.rate_limit_used.set(self.rate_limit.?.used);
+        metrics.rate_limit_reset.set(self.rate_limit.?.reset.toSeconds());
     }
 
     var response_body = std.Io.Writer.Allocating.init(allocator);

@@ -239,9 +239,12 @@ pub fn start(
 
     var metrics = if (switch (config) {
         inline else => |mode| mode.metrics_listen,
-    } != null) try Metrics.init(allocator, io, .{
-        .prefix = "github_",
-    }) else null;
+    } != null)
+        try Metrics.init(allocator, io, .{
+            .prefix = "github_",
+        })
+    else
+        null;
     defer if (metrics) |*m| m.deinit();
 
     var metrics_scrape = if (switch (config) {
@@ -301,6 +304,7 @@ pub fn start(
             const token = try std.Io.Dir.cwd().readFile(io, token_file, &buffer);
             break :token std.mem.trim(u8, token, " \t\n\r");
         } else null,
+        if (metrics) |*m| &m.client else null,
     );
     defer client.deinit();
 
