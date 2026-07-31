@@ -96,6 +96,11 @@ pub fn deinit(self: *@This()) void {
     self.arena.deinit();
 }
 
+pub const InitError =
+    std.mem.Allocator.Error ||
+    std.Uri.ParseError ||
+    error{UriMissingHost};
+
 /// `user_agent` must outlive this instance.
 pub fn init(
     allocator: std.mem.Allocator,
@@ -103,7 +108,8 @@ pub fn init(
     environ_map: *const std.process.Environ.Map,
     user_agent: ?[]const u8,
     token: ?[]const u8,
-) !@This() {
+    comptime metric_opts: m.RegistryOpts,
+) InitError!@This() {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const arena_allocator = arena.allocator();
