@@ -189,7 +189,7 @@ pub const Config = union(enum) {
     });
 
     pub const Watch = utils.meta.MergedStructs(&.{ @This().Scan, struct {
-        interval_s: u32 = std.time.s_per_hour,
+        interval_s: u32 = std.time.s_per_hour / 2,
     } });
 };
 
