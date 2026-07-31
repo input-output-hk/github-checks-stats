@@ -687,3 +687,12 @@ pub const timeToFix = Query(
     },
     TimeToFixCursor.Tuple,
 );
+
+pub const dbSize = Query(
+    \\SELECT page_size * page_count
+    \\FROM pragma_page_size(), pragma_page_count()
+,
+    false,
+    struct { bytes: i64 },
+    @Tuple(&.{}),
+);

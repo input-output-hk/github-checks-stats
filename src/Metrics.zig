@@ -20,6 +20,8 @@ check_runs: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo
 branch_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, Labels.Branch }), &time_to_fix_buckets),
 pull_request_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo }), &time_to_fix_buckets),
 
+database: m.Gauge(usize),
+
 client: api.Client.Metrics,
 
 const time_to_fix_buckets = [_]u64{
@@ -73,6 +75,9 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
         .pull_request_time_to_fix = try .init(allocator, io, "pull_request_time_to_fix_seconds", .{
             .help = "Duration from an app's first failing commit's check run to first successful commit's check run on a pull request",
         }, opts),
+        .database = .init("database_bytes", .{
+            .help = "Size of the state database",
+        }, opts),
         .client = .init(opts),
     };
 }
@@ -84,6 +89,7 @@ pub fn write(self: *const @This(), writer: *std.Io.Writer) !void {
         self.check_runs,
         self.branch_time_to_fix,
         self.pull_request_time_to_fix,
+        self.database,
     }, writer);
 
     try self.client.write(writer);
@@ -196,5 +202,7 @@ pub const Scrape = struct {
 
             try rows.deinitErr();
         }
+
+        metrics.database.set(@intCast((try Db.queries.dbSize.query(allocator, db_conn, .{})).?.bytes));
     }
 };
