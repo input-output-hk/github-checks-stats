@@ -45,7 +45,7 @@ pub const CheckState = union(enum) {
     }
 
     pub fn toZqlite(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
-        return try std.fmt.allocPrint(allocator, "{f}", .{self});
+        return try std.fmt.allocPrint(allocator, "{t}", .{self.flatten()});
     }
 };
 
