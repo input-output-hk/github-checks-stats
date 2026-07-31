@@ -432,6 +432,7 @@ pub const timeToFix = Query(
         \\      NULL                  AS base_oid,
         \\      r.{[ref_name]f}       AS branch
         \\    FROM {[ref]f} r
+        \\    WHERE r.{[ref_prefix]f} = 'refs/heads/'
         \\
         \\    UNION ALL
         \\
@@ -493,6 +494,7 @@ pub const timeToFix = Query(
         .ref = fmtIdentifier(Ref.table),
         .ref_id = fmtIdentifier(@tagName(Ref.Column.id)),
         .ref_repository = fmtIdentifier(@tagName(Ref.Column.repository)),
+        .ref_prefix = fmtIdentifier(@tagName(Ref.Column.prefix)),
         .ref_name = fmtIdentifier(@tagName(Ref.Column.name)),
         .ref_target_oid = fmtIdentifier(@tagName(Ref.Column.target_oid)),
         .pr = fmtIdentifier(PullRequest.table),
