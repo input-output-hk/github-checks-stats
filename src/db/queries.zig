@@ -432,7 +432,9 @@ pub const timeToFix = Query(
         \\      NULL                  AS base_oid,
         \\      r.{[ref_name]f}       AS branch
         \\    FROM {[ref]f} r
+        \\
         \\    UNION ALL
+        \\
         \\    SELECT
         \\      pr.{[pr_id]f},
         \\      pr.{[pr_repository]f},
@@ -459,7 +461,9 @@ pub const timeToFix = Query(
         \\    LEFT JOIN {[cp]f} cp ON
         \\      cp.{[cp_commit]f} = c.{[commit_id]f}
         \\      AND cp.{[cp_index]f} = 0
+        \\
         \\    UNION ALL
+        \\
         \\    SELECT
         \\      h.seed_id,
         \\      h.repository,
@@ -537,10 +541,11 @@ pub const timeToFix = Query(
         \\      commit_id,
         \\      -- all rows for one commit share the same lineage position;
         \\      -- min() is just "the value".
+        \\      -- XXX seems we can just take `position` then without `min()`? as they're all the same anyway, so it doesn't matter which one is selected?
         \\      min(position)     AS position,
         \\      max(completed_at) AS at,
         \\      CASE
-        \\        WHEN sum(CASE WHEN conclusion != {[cr_conclusion_SUCCESS]f} THEN 1 ELSE 0 END) > 0 THEN 'BROKEN'
+        \\        WHEN sum(CASE conclusion WHEN {[cr_conclusion_SUCCESS]f} THEN 0 ELSE 1 END) > 0 THEN 'BROKEN'
         \\        ELSE 'FIXED'
         \\      END AS state
         \\    FROM ranked_runs
@@ -550,7 +555,7 @@ pub const timeToFix = Query(
         \\  tagged AS (
         \\    SELECT
         \\      *,
-        \\      sum(CASE WHEN state = 'FIXED' THEN 1 ELSE 0 END) OVER (
+        \\      sum(CASE state WHEN 'FIXED' THEN 1 ELSE 0 END) OVER (
         \\        PARTITION BY repository, app, seed_id
         \\        ORDER BY position DESC
         \\        ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
