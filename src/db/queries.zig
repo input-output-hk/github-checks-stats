@@ -338,13 +338,13 @@ pub const checkRunCountGroupedByAppAndRepoAndState = Query(
         \\SELECT
         \\  app.{[app_slug]f},
         \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
-        \\  coalesce(cr.{[cr_conclusion]f}, cr.{[cr_status]f}),
+        \\  coalesce(cr.{[cr_conclusion]f}, cr.{[cr_status]f}) AS state,
         \\  count(cr.{[cr_id]f})
         \\FROM {[cr]f} cr
         \\JOIN {[cs]f} cs ON cs.{[cs_id]f} = cr.{[cr_suite]f}
         \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = cs.{[cs_repo]f}
         \\JOIN {[app]f} app ON app.{[app_id]f} = {[cs_app]f}
-        \\GROUP BY repo.{[repo_id]f}, app.{[app_slug]f}, cr.{[cr_status]f}, cr.{[cr_conclusion]f}
+        \\GROUP BY repo.{[repo_id]f}, app.{[app_slug]f}, state
     , .{
         .app = fmtIdentifier(App.table),
         .app_id = fmtIdentifier(@tagName(App.Column.id)),
