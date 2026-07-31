@@ -13,9 +13,9 @@
 
       package = lib.mkPackageOption perSystem.config.packages name {};
 
-      repositories = lib.mkOption {
+      targets = lib.mkOption {
         type = with lib.types; listOf str;
-        description = "Repositories to scan.";
+        description = "Targets to scan.";
       };
 
       settings = lib.mkOption {
@@ -45,7 +45,7 @@
         in ''
           exec github-checks-stats watch \
             ${lib.cli.toCommandLineShellGNU or lib.cli.toGNUCommandLineShell {} settings} \
-            ${lib.escapeShellArgs cfg.repositories}
+            ${lib.escapeShellArgs cfg.targets}
         '';
 
         enableStrictShellChecks = true;
