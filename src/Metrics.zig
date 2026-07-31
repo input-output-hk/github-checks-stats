@@ -11,6 +11,9 @@ const Db = @import("Db.zig");
 pull_requests: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.Repo, struct {
     state: api.types.PullRequestState,
 } })),
+check_suites: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, struct {
+    state: Db.queries.CheckState.Flat,
+} })),
 check_runs: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, struct {
     state: Db.queries.CheckState.Flat,
 } })),
@@ -47,6 +50,7 @@ const Labels = struct {
 
 pub fn deinit(self: *@This()) void {
     self.pull_requests.deinit();
+    self.check_suites.deinit();
     self.check_runs.deinit();
     self.branch_time_to_fix.deinit();
     self.pull_request_time_to_fix.deinit();
@@ -56,6 +60,9 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
     return .{
         .pull_requests = try .init(allocator, io, "pull_requests", .{
             .help = "Count of pull requests",
+        }, opts),
+        .check_suites = try .init(allocator, io, "check_suites", .{
+            .help = "Count of check suites",
         }, opts),
         .check_runs = try .init(allocator, io, "check_runs", .{
             .help = "Count of check runs",
@@ -73,6 +80,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
 pub fn write(self: *const @This(), writer: *std.Io.Writer) !void {
     try m.write(&.{
         self.pull_requests,
+        self.check_suites,
         self.check_runs,
         self.branch_time_to_fix,
         self.pull_request_time_to_fix,
@@ -108,6 +116,22 @@ pub const Scrape = struct {
                 try metrics.pull_requests.set(.{
                     .repo = row.repo,
                     .state = row.state,
+                }, @intCast(row.count));
+            }
+
+            try rows.deinitErr();
+        }
+
+        {
+            var rows = try Db.queries.checkSuiteCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{});
+            errdefer rows.deinit();
+
+            while (try rows.next(allocator)) |row| {
+                defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+                try metrics.check_suites.set(.{
+                    .app = row.app_slug,
+                    .repo = row.repo,
+                    .state = row.state.flatten(),
                 }, @intCast(row.count));
             }
 

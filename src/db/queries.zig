@@ -333,6 +333,42 @@ pub const pullRequestCountGroupedByRepoAndState = Query(
     @Tuple(&.{}),
 );
 
+pub const checkSuiteCountGroupedByAppAndRepoAndState = Query(
+    std.fmt.comptimePrint(
+        \\SELECT
+        \\  app.{[app_slug]f},
+        \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
+        \\  coalesce(cs.{[cs_conclusion]f}, cs.{[cs_status]f}) AS state,
+        \\  count(cs.{[cs_id]f})
+        \\FROM {[cs]f} cs
+        \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = cs.{[cs_repo]f}
+        \\JOIN {[app]f} app ON app.{[app_id]f} = {[cs_app]f}
+        \\GROUP BY repo.{[repo_id]f}, app.{[app_slug]f}, state
+    , .{
+        .app = fmtIdentifier(App.table),
+        .app_id = fmtIdentifier(@tagName(App.Column.id)),
+        .app_slug = fmtIdentifier(@tagName(App.Column.slug)),
+        .cs = fmtIdentifier(CheckSuite.table),
+        .cs_id = fmtIdentifier(@tagName(CheckSuite.Column.id)),
+        .cs_app = fmtIdentifier(@tagName(CheckSuite.Column.app)),
+        .cs_repo = fmtIdentifier(@tagName(CheckSuite.Column.repository)),
+        .cs_status = fmtIdentifier(@tagName(CheckSuite.Column.status)),
+        .cs_conclusion = fmtIdentifier(@tagName(CheckSuite.Column.conclusion)),
+        .repo = fmtIdentifier(Repository.table),
+        .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
+        .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
+        .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
+    }),
+    true,
+    struct {
+        app_slug: @FieldType(App, "slug"),
+        repo: []const u8,
+        state: CheckState,
+        count: i64,
+    },
+    @Tuple(&.{}),
+);
+
 pub const checkRunCountGroupedByAppAndRepoAndState = Query(
     std.fmt.comptimePrint(
         \\SELECT
