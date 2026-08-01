@@ -113,7 +113,18 @@ pub const Metrics = struct {
     rate_limit_used: m.Gauge(RateLimit.Points),
     rate_limit_reset: m.Gauge(i64),
 
-    pub fn init(comptime opts: m.RegistryOpts) @This() {
+    requests: m.CounterVec(u64, struct { result: enum { success, rate_limited, failure } }),
+
+    pub fn deinit(self: *@This()) void {
+        self.requests.deinit();
+    }
+
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryOpts) !@This() {
+        const requests = try @FieldType(@This(), "requests").init(allocator, io, "requests_total", .{
+            .help = "The number of requests made against the GraphQL API",
+        }, opts);
+        errdefer requests.deinit();
+
         return .{
             .rate_limit_retry_after = .init("rate_limit_retry_after_seconds", .{
                 .help = "The value of the Retry-After header",
@@ -133,6 +144,8 @@ pub const Metrics = struct {
             .rate_limit_reset = .init("rate_limit_reset_timestamp_seconds", .{
                 .help = "The time at which the current rate limit window resets, in UTC epoch seconds",
             }, opts),
+
+            .requests = requests,
         };
     }
 
@@ -232,6 +245,22 @@ pub const ParseResponseError =
 
 /// If `error.RateLimited` is returned, `rate_limit` is non-null.
 pub fn parseResponse(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, response: *std.http.Client.Response) ParseResponseError!api.Cloned(Data) {
+    return if (self.parseResponseImpl(allocator, Data, response)) |data| data: {
+        if (self.metrics) |metrics|
+            try metrics.requests.incr(.{ .result = .success });
+        break :data data;
+    } else |err| err: {
+        if (self.metrics) |metrics|
+            switch (err) {
+                error.RateLimited => try metrics.requests.incr(.{ .result = .rate_limited }),
+                error.QueryFailed => try metrics.requests.incr(.{ .result = .failure }),
+                else => {},
+            };
+        break :err err;
+    };
+}
+
+fn parseResponseImpl(self: *@This(), allocator: std.mem.Allocator, comptime Data: type, response: *std.http.Client.Response) ParseResponseError!api.Cloned(Data) {
     {
         // We need to read headers now as they are invalidated once the response body is initialized.
         var headers = response.head.iterateHeaders();

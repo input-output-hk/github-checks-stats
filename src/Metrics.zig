@@ -56,33 +56,37 @@ pub fn deinit(self: *@This()) void {
     self.check_runs.deinit();
     self.branch_time_to_fix.deinit();
     self.pull_request_time_to_fix.deinit();
+    self.client.deinit();
 }
 
 pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryOpts) !@This() {
-    const pull_requests = try @FieldType(@This(), "pull_requests").init(allocator, io, "pull_requests", .{
+    var pull_requests = try @FieldType(@This(), "pull_requests").init(allocator, io, "pull_requests", .{
         .help = "Count of pull requests",
     }, opts);
     errdefer pull_requests.deinit();
 
-    const check_suites = try @FieldType(@This(), "check_suites").init(allocator, io, "check_suites", .{
+    var check_suites = try @FieldType(@This(), "check_suites").init(allocator, io, "check_suites", .{
         .help = "Count of check suites",
     }, opts);
     errdefer check_suites.deinit();
 
-    const check_runs = try .init(allocator, io, "check_runs", .{
+    var check_runs = try @FieldType(@This(), "check_runs").init(allocator, io, "check_runs", .{
         .help = "Count of check runs",
     }, opts);
     errdefer check_runs.deinit();
 
-    const branch_time_to_fix = try @FieldType(@This(), "branch_time_to_fix").init(allocator, io, "branch_time_to_fix_seconds", .{
+    var branch_time_to_fix = try @FieldType(@This(), "branch_time_to_fix").init(allocator, io, "branch_time_to_fix_seconds", .{
         .help = "Duration from an app's first failing commit's check run to first successful commit's check run on a branch",
     }, opts);
     errdefer branch_time_to_fix.deinit();
 
-    const pull_request_time_to_fix = try @FieldType(@This(), "pull_request_time_to_fix").init(allocator, io, "pull_request_time_to_fix_seconds", .{
+    var pull_request_time_to_fix = try @FieldType(@This(), "pull_request_time_to_fix").init(allocator, io, "pull_request_time_to_fix_seconds", .{
         .help = "Duration from an app's first failing commit's check run to first successful commit's check run on a pull request",
     }, opts);
     errdefer pull_request_time_to_fix.deinit();
+
+    var client = try api.Client.Metrics.init(allocator, io, opts);
+    errdefer client.deinit();
 
     return .{
         .pull_requests = pull_requests,
@@ -93,7 +97,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
         .database = .init("database_bytes", .{
             .help = "Size of the state database",
         }, opts),
-        .client = .init(opts),
+        .client = client,
     };
 }
 
