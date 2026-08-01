@@ -59,22 +59,37 @@ pub fn deinit(self: *@This()) void {
 }
 
 pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryOpts) !@This() {
+    const pull_requests = try @FieldType(@This(), "pull_requests").init(allocator, io, "pull_requests", .{
+        .help = "Count of pull requests",
+    }, opts);
+    errdefer pull_requests.deinit();
+
+    const check_suites = try @FieldType(@This(), "check_suites").init(allocator, io, "check_suites", .{
+        .help = "Count of check suites",
+    }, opts);
+    errdefer check_suites.deinit();
+
+    const check_runs = try .init(allocator, io, "check_runs", .{
+        .help = "Count of check runs",
+    }, opts);
+    errdefer check_runs.deinit();
+
+    const branch_time_to_fix = try @FieldType(@This(), "branch_time_to_fix").init(allocator, io, "branch_time_to_fix_seconds", .{
+        .help = "Duration from an app's first failing commit's check run to first successful commit's check run on a branch",
+    }, opts);
+    errdefer branch_time_to_fix.deinit();
+
+    const pull_request_time_to_fix = try @FieldType(@This(), "pull_request_time_to_fix").init(allocator, io, "pull_request_time_to_fix_seconds", .{
+        .help = "Duration from an app's first failing commit's check run to first successful commit's check run on a pull request",
+    }, opts);
+    errdefer pull_request_time_to_fix.deinit();
+
     return .{
-        .pull_requests = try .init(allocator, io, "pull_requests", .{
-            .help = "Count of pull requests",
-        }, opts),
-        .check_suites = try .init(allocator, io, "check_suites", .{
-            .help = "Count of check suites",
-        }, opts),
-        .check_runs = try .init(allocator, io, "check_runs", .{
-            .help = "Count of check runs",
-        }, opts),
-        .branch_time_to_fix = try .init(allocator, io, "branch_time_to_fix_seconds", .{
-            .help = "Duration from an app's first failing commit's check run to first successful commit's check run on a branch",
-        }, opts),
-        .pull_request_time_to_fix = try .init(allocator, io, "pull_request_time_to_fix_seconds", .{
-            .help = "Duration from an app's first failing commit's check run to first successful commit's check run on a pull request",
-        }, opts),
+        .pull_requests = pull_requests,
+        .check_suites = check_suites,
+        .check_runs = check_runs,
+        .branch_time_to_fix = branch_time_to_fix,
+        .pull_request_time_to_fix = pull_request_time_to_fix,
         .database = .init("database_bytes", .{
             .help = "Size of the state database",
         }, opts),
