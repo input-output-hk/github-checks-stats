@@ -536,17 +536,17 @@ fn TimeToFix(seeds_sql: []const u8) type {
             \\      s.seed_tag,
             \\      s.repository,
             \\      s.base_oid,
-            \\      c.{[commit_id]f}  AS commit_id,
+            \\      c.{[c_id]f}       AS commit_id,
             \\      cp.{[cp_parent]f} AS parent,
             \\      0                 AS position
             \\    FROM seeds s
-            \\    JOIN {[commit]f} c ON
-            \\      c.{[commit_repository]f} = s.repository
-            \\      AND c.{[commit_oid]f} = s.head_oid
+            \\    JOIN {[c]f} c ON
+            \\      c.{[c_repository]f} = s.repository
+            \\      AND c.{[c_oid]f} = s.head_oid
             \\      -- Guard: a PR with head == base has no commits.
-            \\      AND (s.base_oid IS NULL OR c.{[commit_oid]f} != s.base_oid)
+            \\      AND (s.base_oid IS NULL OR c.{[c_oid]f} != s.base_oid)
             \\    LEFT JOIN {[cp]f} cp ON
-            \\      cp.{[cp_commit]f} = c.{[commit_id]f}
+            \\      cp.{[cp_commit]f} = c.{[c_id]f}
             \\      AND cp.{[cp_index]f} = 0
             \\
             \\    UNION ALL
@@ -556,15 +556,15 @@ fn TimeToFix(seeds_sql: []const u8) type {
             \\      h.seed_tag,
             \\      h.repository,
             \\      h.base_oid,
-            \\      c.{[commit_id]f},
+            \\      c.{[c_id]f},
             \\      cp.{[cp_parent]f},
             \\      h.position + 1
             \\    FROM history h
-            \\    JOIN {[commit]f} c ON c.{[commit_id]f} = h.parent
+            \\    JOIN {[c]f} c ON c.{[c_id]f} = h.parent
             \\    LEFT JOIN {[cp]f} cp ON
-            \\      cp.{[cp_commit]f} = c.{[commit_id]f}
+            \\      cp.{[cp_commit]f} = c.{[c_id]f}
             \\      AND cp.{[cp_index]f} = 0
-            \\    WHERE (h.base_oid IS NULL OR c.{[commit_oid]f} != h.base_oid)
+            \\    WHERE (h.base_oid IS NULL OR c.{[c_oid]f} != h.base_oid)
             \\      -- Guard against unlimited walk due to broken parent commit chain.
             \\      AND h.position < {[history_limit]d}
             \\  ),
@@ -671,10 +671,10 @@ fn TimeToFix(seeds_sql: []const u8) type {
             \\  ) -- cursor
             \\ORDER BY c.success_at, r.{[repo_id]f}, a.{[app_id]f}, c.seed_id, c.cycle -- cursor
         , .{
-            .commit = fmtIdentifier(Commit.table),
-            .commit_id = fmtIdentifier(@tagName(Commit.Column.id)),
-            .commit_oid = fmtIdentifier(@tagName(Commit.Column.oid)),
-            .commit_repository = fmtIdentifier(@tagName(Commit.Column.repository)),
+            .c = fmtIdentifier(Commit.table),
+            .c_id = fmtIdentifier(@tagName(Commit.Column.id)),
+            .c_oid = fmtIdentifier(@tagName(Commit.Column.oid)),
+            .c_repository = fmtIdentifier(@tagName(Commit.Column.repository)),
             .cp = fmtIdentifier(Commit.Parent.table),
             .cp_commit = fmtIdentifier(@tagName(Commit.Parent.Column.commit)),
             .cp_index = fmtIdentifier(@tagName(Commit.Parent.Column.index)),
