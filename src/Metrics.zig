@@ -8,6 +8,7 @@ const zqlite_typed = @import("zqlite-typed");
 const api = @import("api.zig");
 const Db = @import("Db.zig");
 
+commits: m.GaugeVec(u32, utils.meta.MergedStructs(&.{Labels.Repo})),
 pull_requests: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.Repo, struct {
     state: api.types.PullRequestState,
 } })),
@@ -51,6 +52,7 @@ const Labels = struct {
 };
 
 pub fn deinit(self: *@This()) void {
+    self.commits.deinit();
     self.pull_requests.deinit();
     self.check_suites.deinit();
     self.check_runs.deinit();
@@ -60,6 +62,11 @@ pub fn deinit(self: *@This()) void {
 }
 
 pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryOpts) !@This() {
+    var commits = try @FieldType(@This(), "commits").init(allocator, io, "commits", .{
+        .help = "Count of commits",
+    }, opts);
+    errdefer commits.deinit();
+
     var pull_requests = try @FieldType(@This(), "pull_requests").init(allocator, io, "pull_requests", .{
         .help = "Count of pull requests",
     }, opts);
@@ -89,6 +96,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
     errdefer client.deinit();
 
     return .{
+        .commits = commits,
         .pull_requests = pull_requests,
         .check_suites = check_suites,
         .check_runs = check_runs,
@@ -103,6 +111,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
 
 pub fn write(self: *const @This(), writer: *std.Io.Writer) !void {
     try m.write(&.{
+        self.commits,
         self.pull_requests,
         self.check_suites,
         self.check_runs,
@@ -131,6 +140,20 @@ pub const Scrape = struct {
     pub fn refreshMetrics(self: *@This(), allocator: std.mem.Allocator, io: std.Io, metrics: *Metrics, db_conn: zqlite.Conn) !void {
         try self.mutex.lock(io);
         defer self.mutex.unlock(io);
+
+        {
+            var rows = try Db.queries.commitCountGroupedByRepo.queryIterator(allocator, db_conn, .{});
+            errdefer rows.deinit();
+
+            while (try rows.next(allocator)) |row| {
+                defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+                try metrics.commits.set(.{
+                    .repo = row.repo,
+                }, @intCast(row.count));
+            }
+
+            try rows.deinitErr();
+        }
 
         {
             var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(allocator, db_conn, .{});

@@ -305,6 +305,31 @@ fn SeparatedStrings(separator: u8) type {
     };
 }
 
+pub const commitCountGroupedByRepo = Query(
+    std.fmt.comptimePrint(
+        \\SELECT
+        \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
+        \\  count(c.{[c_id]f})
+        \\FROM {[c]f} c
+        \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = c.{[c_repository]f}
+        \\GROUP BY repo.{[repo_id]f}
+    , .{
+        .c = fmtIdentifier(Commit.table),
+        .c_id = fmtIdentifier(@tagName(Commit.Column.id)),
+        .c_repository = fmtIdentifier(@tagName(Commit.Column.repository)),
+        .repo = fmtIdentifier(Repository.table),
+        .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
+        .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
+        .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
+    }),
+    true,
+    struct {
+        repo: []const u8,
+        count: i64,
+    },
+    @Tuple(&.{}),
+);
+
 pub const pullRequestCountGroupedByRepoAndState = Query(
     std.fmt.comptimePrint(
         \\SELECT
