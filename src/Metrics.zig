@@ -63,22 +63,22 @@ pub fn deinit(self: *@This()) void {
 
 pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryOpts) !@This() {
     var commits = try @FieldType(@This(), "commits").init(allocator, io, "commits", .{
-        .help = "Count of commits",
+        .help = "Count of scanned commits",
     }, opts);
     errdefer commits.deinit();
 
     var pull_requests = try @FieldType(@This(), "pull_requests").init(allocator, io, "pull_requests", .{
-        .help = "Count of pull requests",
+        .help = "Count of scanned pull requests",
     }, opts);
     errdefer pull_requests.deinit();
 
     var check_suites = try @FieldType(@This(), "check_suites").init(allocator, io, "check_suites", .{
-        .help = "Count of check suites",
+        .help = "Count of scanned check suites",
     }, opts);
     errdefer check_suites.deinit();
 
     var check_runs = try @FieldType(@This(), "check_runs").init(allocator, io, "check_runs", .{
-        .help = "Count of check runs",
+        .help = "Count of scanned check runs",
     }, opts);
     errdefer check_runs.deinit();
 
