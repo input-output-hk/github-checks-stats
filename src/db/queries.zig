@@ -327,7 +327,7 @@ pub const commitCountGroupedByRepo = Query(
         repo: []const u8,
         count: i64,
     },
-    @Tuple(&.{}),
+    struct {},
 );
 
 pub const pullRequestCountGroupedByRepoAndState = Query(
@@ -355,7 +355,7 @@ pub const pullRequestCountGroupedByRepoAndState = Query(
         state: @FieldType(PullRequest, "state"),
         count: i64,
     },
-    @Tuple(&.{}),
+    struct {},
 );
 
 pub const checkSuiteCountGroupedByAppAndRepoAndState = Query(
@@ -391,7 +391,7 @@ pub const checkSuiteCountGroupedByAppAndRepoAndState = Query(
         state: CheckState,
         count: i64,
     },
-    @Tuple(&.{}),
+    struct {},
 );
 
 pub const checkRunCountGroupedByAppAndRepoAndState = Query(
@@ -431,7 +431,7 @@ pub const checkRunCountGroupedByAppAndRepoAndState = Query(
         state: CheckState,
         count: i64,
     },
-    @Tuple(&.{}),
+    struct {},
 );
 
 pub const TimeToFixCursor = struct {
@@ -726,5 +726,5 @@ pub const dbSize = Query(
 ,
     false,
     struct { bytes: i64 },
-    @Tuple(&.{}),
+    struct {},
 );
