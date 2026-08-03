@@ -8,6 +8,8 @@ const zqlite_typed = @import("zqlite-typed");
 const api = @import("api.zig");
 const Db = @import("Db.zig");
 
+const Metrics = @This();
+
 commits: m.GaugeVec(u32, utils.meta.MergedStructs(&.{Labels.Repo})),
 pull_requests: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.Repo, struct {
     state: api.types.PullRequestState,
@@ -20,6 +22,8 @@ check_runs: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo
 } })),
 branch_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, Labels.Branch }), &time_to_fix_buckets),
 pull_request_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo }), &time_to_fix_buckets),
+
+metric_computation_duration: m.GaugeVec(f16, Labels.Metric),
 
 database: m.Gauge(usize),
 
@@ -49,6 +53,21 @@ const Labels = struct {
     pub const App = struct { app: api.types.Id };
     pub const Repo = struct { repo: []const u8 };
     pub const Branch = struct { branch: []const u8 };
+    pub const Metric = struct { metric: ComputedMetric };
+};
+
+const ComputedMetric = enum {
+    commits,
+    pull_requests,
+    check_suites,
+    check_runs,
+    branch_time_to_fix,
+    pull_request_time_to_fix,
+
+    comptime {
+        for (std.enums.values(@This())) |metric|
+            std.debug.assert(@hasField(Metrics, @tagName(metric)));
+    }
 };
 
 pub fn deinit(self: *@This()) void {
@@ -58,6 +77,7 @@ pub fn deinit(self: *@This()) void {
     self.check_runs.deinit();
     self.branch_time_to_fix.deinit();
     self.pull_request_time_to_fix.deinit();
+    self.metric_computation_duration.deinit();
     self.client.deinit();
 }
 
@@ -92,6 +112,11 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
     }, opts);
     errdefer pull_request_time_to_fix.deinit();
 
+    var metric_computation_duration = try @FieldType(@This(), "metric_computation_duration").init(allocator, io, "metric_computation_duration_seconds", .{
+        .help = "Duration a metric takes to compute",
+    }, opts);
+    errdefer metric_computation_duration.deinit();
+
     var client = try api.Client.Metrics.init(allocator, io, opts);
     errdefer client.deinit();
 
@@ -102,6 +127,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
         .check_runs = check_runs,
         .branch_time_to_fix = branch_time_to_fix,
         .pull_request_time_to_fix = pull_request_time_to_fix,
+        .metric_computation_duration = metric_computation_duration,
         .database = .init("database_bytes", .{
             .help = "Size of the state database",
         }, opts),
@@ -117,22 +143,23 @@ pub fn write(self: *const @This(), writer: *std.Io.Writer) !void {
         self.check_runs,
         self.branch_time_to_fix,
         self.pull_request_time_to_fix,
+        self.metric_computation_duration,
         self.database,
     }, writer);
 
     try self.client.write(writer);
 }
 
-const Metrics = @This();
-
 pub const Scrape = struct {
     allocator: std.mem.Allocator,
     mutex: std.Io.Mutex = .init,
 
-    time_to_fix_cursor: Db.queries.TimeToFixCursor = .{},
+    branch_time_to_fix_cursor: Db.queries.TimeToFixCursor = .{},
+    pull_request_time_to_fix_cursor: Db.queries.TimeToFixCursor = .{},
 
     pub fn deinit(self: *@This()) void {
-        self.time_to_fix_cursor.deinit(self.allocator);
+        self.branch_time_to_fix_cursor.deinit(self.allocator);
+        self.pull_request_time_to_fix_cursor.deinit(self.allocator);
     }
 
     /// Thread safe via mutex. If this function was not protected by a mutex, the following would apply:
@@ -141,110 +168,157 @@ pub const Scrape = struct {
         try self.mutex.lock(io);
         defer self.mutex.unlock(io);
 
-        {
-            var rows = try Db.queries.commitCountGroupedByRepo.queryIterator(allocator, db_conn, .{});
-            errdefer rows.deinit();
+        inline for (std.enums.values(Metrics.ComputedMetric)) |metric|
+            try self.refreshComputedMetric(metric, allocator, io, metrics, db_conn);
 
-            while (try rows.next(allocator)) |row| {
-                defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
-                try metrics.commits.set(.{
-                    .repo = row.repo,
-                }, @intCast(row.count));
-            }
+        metrics.database.set(@intCast((try Db.queries.dbSize.query(allocator, db_conn, .{})).?.bytes));
+    }
 
-            try rows.deinitErr();
-        }
+    fn refreshComputedMetric(
+        self: *@This(),
+        // Would not need to be comptime but should compile away to cost of the switch.
+        comptime metric: Metrics.ComputedMetric,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        metrics: *Metrics,
+        db_conn: zqlite.Conn,
+    ) !void {
+        const started_at = std.Io.Clock.Timestamp.now(io, .cpu_process);
 
-        {
-            var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(allocator, db_conn, .{});
-            errdefer rows.deinit();
+        switch (metric) {
+            .commits => {
+                var rows = try Db.queries.commitCountGroupedByRepo.queryIterator(allocator, db_conn, .{});
+                errdefer rows.deinit();
 
-            while (try rows.next(allocator)) |row| {
-                defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
-                try metrics.pull_requests.set(.{
-                    .repo = row.repo,
-                    .state = row.state,
-                }, @intCast(row.count));
-            }
+                while (try rows.next(allocator)) |row| {
+                    defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+                    try metrics.commits.set(.{
+                        .repo = row.repo,
+                    }, @intCast(row.count));
+                }
 
-            try rows.deinitErr();
-        }
+                try rows.deinitErr();
+            },
+            .pull_requests => {
+                var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(allocator, db_conn, .{});
+                errdefer rows.deinit();
 
-        {
-            var rows = try Db.queries.checkSuiteCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{});
-            errdefer rows.deinit();
+                while (try rows.next(allocator)) |row| {
+                    defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+                    try metrics.pull_requests.set(.{
+                        .repo = row.repo,
+                        .state = row.state,
+                    }, @intCast(row.count));
+                }
 
-            while (try rows.next(allocator)) |row| {
-                defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
-                try metrics.check_suites.set(.{
-                    .app = row.app_slug,
-                    .repo = row.repo,
-                    .state = row.state.flatten(),
-                }, @intCast(row.count));
-            }
+                try rows.deinitErr();
+            },
+            .check_suites => {
+                var rows = try Db.queries.checkSuiteCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{});
+                errdefer rows.deinit();
 
-            try rows.deinitErr();
-        }
+                while (try rows.next(allocator)) |row| {
+                    defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+                    try metrics.check_suites.set(.{
+                        .app = row.app_slug,
+                        .repo = row.repo,
+                        .state = row.state.flatten(),
+                    }, @intCast(row.count));
+                }
 
-        {
-            var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{});
-            errdefer rows.deinit();
+                try rows.deinitErr();
+            },
+            .check_runs => {
+                var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{});
+                errdefer rows.deinit();
 
-            while (try rows.next(allocator)) |row| {
-                defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
-                try metrics.check_runs.set(.{
-                    .app = row.app_slug,
-                    .repo = row.repo,
-                    .state = row.state.flatten(),
-                }, @intCast(row.count));
-            }
+                while (try rows.next(allocator)) |row| {
+                    defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+                    try metrics.check_runs.set(.{
+                        .app = row.app_slug,
+                        .repo = row.repo,
+                        .state = row.state.flatten(),
+                    }, @intCast(row.count));
+                }
 
-            try rows.deinitErr();
-        }
+                try rows.deinitErr();
+            },
+            .branch_time_to_fix => {
+                var rows = try Db.queries.branchTimeToFix.queryIterator(allocator, db_conn, self.branch_time_to_fix_cursor.tuple());
+                errdefer rows.deinit();
 
-        {
-            var rows = try Db.queries.timeToFix.queryIterator(allocator, db_conn, self.time_to_fix_cursor.tuple());
-            errdefer rows.deinit();
+                while (try rows.next(allocator)) |row| {
+                    defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
 
-            while (try rows.next(allocator)) |row| {
-                defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+                    const new_cursor = try (Db.queries.TimeToFixCursor{
+                        .fixed_at = row.fixed_at,
+                        .repo_id = row.repo_id,
+                        .app_id = row.app_id,
+                        .seed_id = row.seed_id,
+                        .cycle = row.cycle,
+                    }).dupe(self.allocator);
+                    errdefer new_cursor.deinit(self.allocator);
 
-                const new_cursor = try (Db.queries.TimeToFixCursor{
-                    .fixed_at = row.fixed_at,
-                    .repo_id = row.repo_id,
-                    .app_id = row.app_id,
-                    .seed_id = row.seed_id,
-                    .cycle = row.cycle,
-                }).dupe(self.allocator);
-                errdefer new_cursor.deinit(self.allocator);
-
-                if (row.branch) |branch|
                     try metrics.branch_time_to_fix.observe(.{
                         .app = row.app_slug,
                         .repo = row.repo_full,
-                        .branch = branch,
-                    }, @intCast(row.broken_duration_seconds))
-                else
+                        .branch = row.seed_tag,
+                    }, @intCast(row.broken_duration_seconds));
+
+                    {
+                        self.branch_time_to_fix_cursor.deinit(self.allocator);
+
+                        // Now that the old cursor is freed,
+                        // no errors must happen until the new cursor is set,
+                        // so that the new cursor will be freed.
+                        errdefer comptime unreachable;
+
+                        self.branch_time_to_fix_cursor = new_cursor;
+                    }
+                }
+
+                try rows.deinitErr();
+            },
+            .pull_request_time_to_fix => {
+                var rows = try Db.queries.pullRequestTimeToFix.queryIterator(allocator, db_conn, self.pull_request_time_to_fix_cursor.tuple());
+                errdefer rows.deinit();
+
+                while (try rows.next(allocator)) |row| {
+                    defer zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row);
+
+                    const new_cursor = try (Db.queries.TimeToFixCursor{
+                        .fixed_at = row.fixed_at,
+                        .repo_id = row.repo_id,
+                        .app_id = row.app_id,
+                        .seed_id = row.seed_id,
+                        .cycle = row.cycle,
+                    }).dupe(self.allocator);
+                    errdefer new_cursor.deinit(self.allocator);
+
                     try metrics.pull_request_time_to_fix.observe(.{
                         .app = row.app_slug,
                         .repo = row.repo_full,
                     }, @intCast(row.broken_duration_seconds));
 
-                {
-                    self.time_to_fix_cursor.deinit(self.allocator);
+                    {
+                        self.pull_request_time_to_fix_cursor.deinit(self.allocator);
 
-                    // Now that the old cursor is freed,
-                    // no errors must happen until the new cursor is set,
-                    // so that the new cursor will be freed.
-                    errdefer comptime unreachable;
+                        // Now that the old cursor is freed,
+                        // no errors must happen until the new cursor is set,
+                        // so that the new cursor will be freed.
+                        errdefer comptime unreachable;
 
-                    self.time_to_fix_cursor = new_cursor;
+                        self.pull_request_time_to_fix_cursor = new_cursor;
+                    }
                 }
-            }
 
-            try rows.deinitErr();
+                try rows.deinitErr();
+            },
         }
 
-        metrics.database.set(@intCast((try Db.queries.dbSize.query(allocator, db_conn, .{})).?.bytes));
+        try metrics.metric_computation_duration.set(
+            .{ .metric = metric },
+            @floatCast(@as(f64, @floatFromInt(started_at.untilNow(io).raw.nanoseconds)) / std.time.ns_per_s),
+        );
     }
 };
