@@ -345,8 +345,14 @@ pub fn start(
     switch (config) {
         .serve => unreachable,
         .scan => while (true) {
+            if (metrics) |*m|
+                m.scan_state.set(@intFromEnum(Metrics.ScanState.scanning));
+
             scan.scan(&client, db_conn, retry_opts) catch |err| switch (err) {
                 error.RateLimited => {
+                    if (metrics) |*m|
+                        m.scan_state.set(@intFromEnum(Metrics.ScanState.rate_limited));
+
                     const duration = client.rate_limit.?.delay().?.fromNow(io);
                     std.log.warn("rate limited; continuing in {f}", .{duration});
                     try std.Io.sleep(io, duration, .real);
@@ -359,8 +365,14 @@ pub fn start(
         .watch => |watch| {
             const interval = std.Io.Duration.fromSeconds(watch.interval_s);
             while (true) {
+                if (metrics) |*m|
+                    m.scan_state.set(@intFromEnum(Metrics.ScanState.scanning));
+
                 scan.scan(&client, db_conn, retry_opts) catch |err| switch (err) {
                     error.RateLimited => {
+                        if (metrics) |*m|
+                            m.scan_state.set(@intFromEnum(Metrics.ScanState.rate_limited));
+
                         const duration = client.rate_limit.?.delay().?.fromNow(io);
                         std.log.warn("rate limited; continuing in {f}", .{duration});
                         try std.Io.sleep(io, duration, .real);
@@ -368,6 +380,10 @@ pub fn start(
                     },
                     else => |e| return e,
                 };
+
+                if (metrics) |*m|
+                    m.scan_state.set(@intFromEnum(Metrics.ScanState.idle));
+
                 std.log.info("next scan in {f}", .{interval});
                 try std.Io.sleep(io, interval, .awake);
             }

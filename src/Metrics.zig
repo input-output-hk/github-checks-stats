@@ -25,6 +25,8 @@ pull_request_time_to_fix: m.HistogramVec(u32, utils.meta.MergedStructs(&.{ Label
 
 metric_computation_duration: m.GaugeVec(f16, Labels.Metric),
 
+scan_state: m.Gauge(std.meta.Tag(ScanState)),
+
 database: m.Gauge(usize),
 
 client: api.Client.Metrics,
@@ -68,6 +70,12 @@ const ComputedMetric = enum {
         for (std.enums.values(@This())) |metric|
             std.debug.assert(@hasField(Metrics, @tagName(metric)));
     }
+};
+
+pub const ScanState = enum {
+    idle,
+    scanning,
+    rate_limited,
 };
 
 pub fn deinit(self: *@This()) void {
@@ -128,6 +136,12 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
         .branch_time_to_fix = branch_time_to_fix,
         .pull_request_time_to_fix = pull_request_time_to_fix,
         .metric_computation_duration = metric_computation_duration,
+        .scan_state = .init("scan_state", .{
+            .help = std.fmt.comptimePrint(
+                "State of scanning ({f})",
+                .{utils.fmt.fmtJoinSepStr(ScanState, "{0d} = {0t}", std.enums.values(ScanState), ", ")},
+            ),
+        }, opts),
         .database = .init("database_bytes", .{
             .help = "Size of the state database",
         }, opts),
@@ -144,6 +158,7 @@ pub fn write(self: *const @This(), writer: *std.Io.Writer) !void {
         self.branch_time_to_fix,
         self.pull_request_time_to_fix,
         self.metric_computation_duration,
+        self.scan_state,
         self.database,
     }, writer);
 
