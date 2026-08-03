@@ -20,8 +20,8 @@ check_suites: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Re
 check_runs: m.GaugeVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, struct {
     state: Db.queries.CheckState.Flat,
 } })),
-branch_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, Labels.Branch }), &time_to_fix_buckets),
-pull_request_time_to_fix: m.HistogramVec(u64, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo }), &time_to_fix_buckets),
+branch_time_to_fix: m.HistogramVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo, Labels.Branch }), &time_to_fix_buckets),
+pull_request_time_to_fix: m.HistogramVec(u32, utils.meta.MergedStructs(&.{ Labels.App, Labels.Repo }), &time_to_fix_buckets),
 
 metric_computation_duration: m.GaugeVec(f16, Labels.Metric),
 
@@ -29,7 +29,7 @@ database: m.Gauge(usize),
 
 client: api.Client.Metrics,
 
-const time_to_fix_buckets = [_]u64{
+const time_to_fix_buckets = [_]u32{
     5 * std.time.s_per_min,
     15 * std.time.s_per_min,
     30 * std.time.s_per_min,
