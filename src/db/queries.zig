@@ -441,8 +441,6 @@ pub const TimeToFixCursor = struct {
     seed_id: ?types.Id = null,
     cycle: ?i64 = null,
 
-    pub const Tuple = utils.meta.FieldsTuple(@This());
-
     pub fn deinit(self: @This(), allocator: std.mem.Allocator) void {
         if (self.repo_id) |repo_id| allocator.free(repo_id);
         if (self.app_id) |app_id| allocator.free(app_id);
@@ -465,16 +463,6 @@ pub const TimeToFixCursor = struct {
             .app_id = app_id,
             .seed_id = seed_id,
             .cycle = self.cycle,
-        };
-    }
-
-    pub fn tuple(self: @This()) Tuple {
-        return .{
-            self.fixed_at,
-            self.repo_id,
-            self.app_id,
-            self.seed_id,
-            self.cycle,
         };
     }
 };
@@ -638,38 +626,6 @@ fn TimeToFix(seeds_sql: []const u8) type {
             \\    FROM tagged
             \\    GROUP BY repository, app, seed_id, cycle
             \\  )
-            \\SELECT
-            \\  r.id                     AS repo_id,
-            \\  r.owner || '/' || r.name AS repo_full,
-            \\  a.id                     AS app_id,
-            \\  a.slug                   AS app_slug,
-            \\  c.seed_id,
-            \\  c.seed_tag,
-            \\  c.cycle,
-            \\  c.broken_at,
-            \\  c.success_at,
-            \\  cast(
-            \\    (julianday(c.success_at) - julianday(c.broken_at)) * {[s_per_day]d}
-            \\    AS INTEGER
-            \\  ) AS broken_duration_seconds
-            \\FROM cycles c
-            \\JOIN {[repo]f} r ON r.id = c.repository
-            \\JOIN {[app]f}  a ON a.id = c.app
-            \\WHERE
-            \\  c.broken_at IS NOT NULL
-            \\  AND c.success_at IS NOT NULL
-            \\  -- Drop cycles where the "fix" completed before the "break": lineage
-            \\  -- adjacency puts them in the same cycle but the check-run timestamps
-            \\  -- would produce a negative duration.
-            \\  AND c.success_at >= c.broken_at
-            \\  AND (c.success_at, r.{[repo_id]f}, a.{[app_id]f}, c.seed_id, c.cycle) > (
-            \\    CASE WHEN ?1 IS NULL THEN '' ELSE ?1 END,
-            \\    CASE WHEN ?2 IS NULL THEN '' ELSE ?2 END,
-            \\    CASE WHEN ?3 IS NULL THEN '' ELSE ?3 END,
-            \\    CASE WHEN ?4 IS NULL THEN '' ELSE ?4 END,
-            \\    CASE WHEN ?5 IS NULL THEN -1 ELSE ?5 END
-            \\  ) -- cursor
-            \\ORDER BY c.success_at, r.{[repo_id]f}, a.{[app_id]f}, c.seed_id, c.cycle -- cursor
         , .{
             .c = fmtIdentifier(Commit.table),
             .c_id = fmtIdentifier(@tagName(Commit.Column.id)),
@@ -697,11 +653,52 @@ fn TimeToFix(seeds_sql: []const u8) type {
             .cr_conclusion_FAILURE = fmtString(@tagName(types.CheckConclusionState.FAILURE)),
             .cr_completed_at = fmtIdentifier(@tagName(CheckRun.Column.completed_at)),
             .cr_conclusion = fmtIdentifier(@tagName(CheckRun.Column.conclusion)),
+            // split here to avoid exceeding fmt arg count limit
+        }) ++ std.fmt.comptimePrint(
+            \\
+            \\SELECT
+            \\  r.id                     AS repo_id,
+            \\  r.owner || '/' || r.name AS repo_full,
+            \\  a.id                     AS app_id,
+            \\  a.slug                   AS app_slug,
+            \\  c.seed_id,
+            \\  c.seed_tag,
+            \\  c.cycle,
+            \\  c.broken_at,
+            \\  c.success_at,
+            \\  cast(
+            \\    (julianday(c.success_at) - julianday(c.broken_at)) * {[s_per_day]d}
+            \\    AS INTEGER
+            \\  ) AS broken_duration_seconds
+            \\FROM cycles c
+            \\JOIN {[repo]f} r ON r.id = c.repository
+            \\JOIN {[app]f}  a ON a.id = c.app
+            \\WHERE
+            \\  c.broken_at IS NOT NULL
+            \\  AND c.success_at IS NOT NULL
+            \\  -- Drop cycles where the "fix" completed before the "break": lineage
+            \\  -- adjacency puts them in the same cycle but the check-run timestamps
+            \\  -- would produce a negative duration.
+            \\  AND c.success_at >= c.broken_at
+            \\  AND (c.success_at, r.{[repo_id]f}, a.{[app_id]f}, c.seed_id, c.cycle) > (
+            \\    CASE WHEN :{[cursor_fixed_at]s} IS NULL THEN '' ELSE :{[cursor_fixed_at]s} END,
+            \\    CASE WHEN :{[cursor_repo_id]s}  IS NULL THEN '' ELSE :{[cursor_repo_id]s}  END,
+            \\    CASE WHEN :{[cursor_app_id]s}   IS NULL THEN '' ELSE :{[cursor_app_id]s}   END,
+            \\    CASE WHEN :{[cursor_seed_id]s}  IS NULL THEN '' ELSE :{[cursor_seed_id]s}  END,
+            \\    CASE WHEN :{[cursor_cycle]s}    IS NULL THEN -1 ELSE :{[cursor_cycle]s}    END
+            \\  )
+            \\ORDER BY c.success_at, r.{[repo_id]f}, a.{[app_id]f}, c.seed_id, c.cycle -- cursor
+        , .{
             .repo = fmtIdentifier(Repository.table),
             .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
             .app = fmtIdentifier(App.table),
             .app_id = fmtIdentifier(@tagName(App.Column.id)),
             .s_per_day = std.time.s_per_day,
+            .cursor_fixed_at = std.meta.fieldInfo(TimeToFixCursor, .fixed_at).name,
+            .cursor_repo_id = std.meta.fieldInfo(TimeToFixCursor, .repo_id).name,
+            .cursor_app_id = std.meta.fieldInfo(TimeToFixCursor, .app_id).name,
+            .cursor_seed_id = std.meta.fieldInfo(TimeToFixCursor, .seed_id).name,
+            .cursor_cycle = std.meta.fieldInfo(TimeToFixCursor, .cycle).name,
         }),
         true,
         struct {
@@ -716,7 +713,7 @@ fn TimeToFix(seeds_sql: []const u8) type {
             fixed_at: types.DateTime,
             broken_duration_seconds: i64,
         },
-        TimeToFixCursor.Tuple,
+        TimeToFixCursor,
     );
 }
 

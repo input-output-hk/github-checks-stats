@@ -244,7 +244,7 @@ pub const Scrape = struct {
                 try rows.deinitErr();
             },
             .branch_time_to_fix => {
-                var rows = try Db.queries.branchTimeToFix.queryIterator(allocator, db_conn, self.branch_time_to_fix_cursor.tuple());
+                var rows = try Db.queries.branchTimeToFix.queryIterator(allocator, db_conn, self.branch_time_to_fix_cursor);
                 errdefer rows.deinit();
 
                 while (try rows.next(allocator)) |row| {
@@ -280,7 +280,7 @@ pub const Scrape = struct {
                 try rows.deinitErr();
             },
             .pull_request_time_to_fix => {
-                var rows = try Db.queries.pullRequestTimeToFix.queryIterator(allocator, db_conn, self.pull_request_time_to_fix_cursor.tuple());
+                var rows = try Db.queries.pullRequestTimeToFix.queryIterator(allocator, db_conn, self.pull_request_time_to_fix_cursor);
                 errdefer rows.deinit();
 
                 while (try rows.next(allocator)) |row| {
