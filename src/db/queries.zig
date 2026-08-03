@@ -514,9 +514,7 @@ fn TimeToFix(seeds_sql: []const u8) type {
         std.fmt.comptimePrint(
             \\WITH RECURSIVE
             \\  seeds AS (
-            \\
-        ++ seeds_sql ++
-            \\
+            \\    {[seeds_sql]s}
             \\  ),
             \\  history AS MATERIALIZED (
             \\    SELECT
@@ -627,6 +625,7 @@ fn TimeToFix(seeds_sql: []const u8) type {
             \\    GROUP BY repository, app, seed_id, cycle
             \\  )
         , .{
+            .seeds_sql = seeds_sql,
             .c = fmtIdentifier(Commit.table),
             .c_id = fmtIdentifier(@tagName(Commit.Column.id)),
             .c_oid = fmtIdentifier(@tagName(Commit.Column.oid)),
