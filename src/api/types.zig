@@ -13,8 +13,12 @@ pub const DateTime = struct {
 
     const Inner = zeit.Time;
 
-    pub fn fromIso8601(text: []const u8) !DateTime {
+    pub fn fromIso8601(text: []const u8) !@This() {
         return .{ .inner = try Inner.fromISO8601(std.mem.trim(u8, text, " ")) };
+    }
+
+    pub fn fromTimestamp(timestamp: std.Io.Timestamp) @This() {
+        return .{ .inner = zeit.instant(.{ .unix_nano = timestamp.nanoseconds }, &zeit.utc).time() };
     }
 
     pub fn jsonParse(allocator: std.mem.Allocator, source: anytype, options: std.json.ParseOptions) !@This() {

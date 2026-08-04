@@ -368,6 +368,9 @@ pub const checkSuiteCountGroupedByAppAndRepoAndState = Query(
         \\FROM {[cs]f} cs
         \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = cs.{[cs_repo]f}
         \\JOIN {[app]f} app ON app.{[app_id]f} = {[cs_app]f}
+        \\WHERE
+        \\  (:created_at_gte IS NULL OR datetime(cs.{[cs_created_at]f}) >= datetime(:created_at_gte))
+        \\  AND (:updated_at_lt IS NULL OR datetime(cs.{[cs_updated_at]f}) < datetime(:updated_at_lt))
         \\GROUP BY repo.{[repo_id]f}, app.{[app_slug]f}, state
     , .{
         .app = fmtIdentifier(App.table),
@@ -377,6 +380,8 @@ pub const checkSuiteCountGroupedByAppAndRepoAndState = Query(
         .cs_id = fmtIdentifier(@tagName(CheckSuite.Column.id)),
         .cs_app = fmtIdentifier(@tagName(CheckSuite.Column.app)),
         .cs_repo = fmtIdentifier(@tagName(CheckSuite.Column.repository)),
+        .cs_created_at = fmtIdentifier(@tagName(CheckSuite.Column.created_at)),
+        .cs_updated_at = fmtIdentifier(@tagName(CheckSuite.Column.updated_at)),
         .cs_status = fmtIdentifier(@tagName(CheckSuite.Column.status)),
         .cs_conclusion = fmtIdentifier(@tagName(CheckSuite.Column.conclusion)),
         .repo = fmtIdentifier(Repository.table),
@@ -391,7 +396,10 @@ pub const checkSuiteCountGroupedByAppAndRepoAndState = Query(
         state: CheckState,
         count: i64,
     },
-    struct {},
+    struct {
+        created_at_gte: ?types.DateTime = null,
+        updated_at_lt: ?types.DateTime = null,
+    },
 );
 
 pub const checkRunCountGroupedByAppAndRepoAndState = Query(
@@ -405,6 +413,9 @@ pub const checkRunCountGroupedByAppAndRepoAndState = Query(
         \\JOIN {[cs]f} cs ON cs.{[cs_id]f} = cr.{[cr_suite]f}
         \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = cs.{[cs_repo]f}
         \\JOIN {[app]f} app ON app.{[app_id]f} = {[cs_app]f}
+        \\WHERE
+        \\  (:started_at_gte IS NULL OR datetime(cr.{[cr_started_at]f}) >= datetime(:started_at_gte))
+        \\  AND (:completed_at_lt IS NULL OR datetime(cr.{[cr_completed_at]f}) < datetime(:completed_at_lt))
         \\GROUP BY repo.{[repo_id]f}, app.{[app_slug]f}, state
     , .{
         .app = fmtIdentifier(App.table),
@@ -417,6 +428,8 @@ pub const checkRunCountGroupedByAppAndRepoAndState = Query(
         .cr = fmtIdentifier(CheckRun.table),
         .cr_id = fmtIdentifier(@tagName(CheckRun.Column.id)),
         .cr_suite = fmtIdentifier(@tagName(CheckRun.Column.suite)),
+        .cr_started_at = fmtIdentifier(@tagName(CheckRun.Column.started_at)),
+        .cr_completed_at = fmtIdentifier(@tagName(CheckRun.Column.completed_at)),
         .cr_status = fmtIdentifier(@tagName(CheckRun.Column.status)),
         .cr_conclusion = fmtIdentifier(@tagName(CheckRun.Column.conclusion)),
         .repo = fmtIdentifier(Repository.table),
@@ -431,7 +444,10 @@ pub const checkRunCountGroupedByAppAndRepoAndState = Query(
         state: CheckState,
         count: i64,
     },
-    struct {},
+    struct {
+        started_at_gte: ?types.DateTime = null,
+        completed_at_lt: ?types.DateTime = null,
+    },
 );
 
 pub const TimeToFixCursor = struct {
@@ -569,8 +585,14 @@ fn TimeToFix(seeds_sql: []const u8) type {
             \\        ORDER BY cr.{[cr_completed_at]f} DESC
             \\      ) AS rn
             \\    FROM history h
-            \\    CROSS JOIN {[cs]f} cs ON cs.{[cs_commit]f} = h.commit_id
-            \\    CROSS JOIN {[cr]f} cr ON cr.{[cr_suite]f} = cs.{[cs_id]f}
+            \\    CROSS JOIN {[cs]f} cs ON
+            \\      cs.{[cs_commit]f} = h.commit_id
+            \\      AND (:at_gte IS NULL OR datetime(cs.{[cs_created_at]f}) >= datetime(:at_gte))
+            \\      AND (:at_lt IS NULL OR datetime(cs.{[cs_updated_at]f}) < datetime(:at_lt))
+            \\    CROSS JOIN {[cr]f} cr ON
+            \\      cr.{[cr_suite]f} = cs.{[cs_id]f}
+            \\      AND (:at_gte IS NULL OR datetime(cr.{[cr_started_at]f}) >= datetime(:at_gte))
+            \\      AND (:at_lt IS NULL OR datetime(cr.{[cr_completed_at]f}) < datetime(:at_lt))
             \\    WHERE
             \\      cr.{[cr_status]f} = {[cr_status_COMPLETED]f}
             \\      AND cr.{[cr_completed_at]f} IS NOT NULL
@@ -640,9 +662,13 @@ fn TimeToFix(seeds_sql: []const u8) type {
             .cs_repository = fmtIdentifier(@tagName(CheckSuite.Column.repository)),
             .cs_app = fmtIdentifier(@tagName(CheckSuite.Column.app)),
             .cs_commit = fmtIdentifier(@tagName(CheckSuite.Column.commit)),
+            .cs_created_at = fmtIdentifier(@tagName(CheckSuite.Column.created_at)),
+            .cs_updated_at = fmtIdentifier(@tagName(CheckSuite.Column.updated_at)),
             .cr = fmtIdentifier(CheckRun.table),
             .cr_suite = fmtIdentifier(@tagName(CheckRun.Column.suite)),
             .cr_name = fmtIdentifier(@tagName(CheckRun.Column.name)),
+            .cr_started_at = fmtIdentifier(@tagName(CheckRun.Column.started_at)),
+            .cr_completed_at = fmtIdentifier(@tagName(CheckRun.Column.completed_at)),
             .cr_status = fmtIdentifier(@tagName(CheckRun.Column.status)),
             .cr_status_COMPLETED = fmtString(@tagName(types.CheckStatusState.COMPLETED)),
             .cr_conclusion_SUCCESS = fmtString(@tagName(types.CheckConclusionState.SUCCESS)),
@@ -650,7 +676,6 @@ fn TimeToFix(seeds_sql: []const u8) type {
             .cr_conclusion_TIMED_OUT = fmtString(@tagName(types.CheckConclusionState.TIMED_OUT)),
             .cr_conclusion_CANCELLED = fmtString(@tagName(types.CheckConclusionState.CANCELLED)),
             .cr_conclusion_FAILURE = fmtString(@tagName(types.CheckConclusionState.FAILURE)),
-            .cr_completed_at = fmtIdentifier(@tagName(CheckRun.Column.completed_at)),
             .cr_conclusion = fmtIdentifier(@tagName(CheckRun.Column.conclusion)),
             // split here to avoid exceeding fmt arg count limit
         }) ++ std.fmt.comptimePrint(
@@ -693,11 +718,11 @@ fn TimeToFix(seeds_sql: []const u8) type {
             .app = fmtIdentifier(App.table),
             .app_id = fmtIdentifier(@tagName(App.Column.id)),
             .s_per_day = std.time.s_per_day,
-            .cursor_fixed_at = std.meta.fieldInfo(TimeToFixCursor, .fixed_at).name,
-            .cursor_repo_id = std.meta.fieldInfo(TimeToFixCursor, .repo_id).name,
-            .cursor_app_id = std.meta.fieldInfo(TimeToFixCursor, .app_id).name,
-            .cursor_seed_id = std.meta.fieldInfo(TimeToFixCursor, .seed_id).name,
-            .cursor_cycle = std.meta.fieldInfo(TimeToFixCursor, .cycle).name,
+            .cursor_fixed_at = "cursor_" ++ std.meta.fieldInfo(TimeToFixCursor, .fixed_at).name,
+            .cursor_repo_id = "cursor_" ++ std.meta.fieldInfo(TimeToFixCursor, .repo_id).name,
+            .cursor_app_id = "cursor_" ++ std.meta.fieldInfo(TimeToFixCursor, .app_id).name,
+            .cursor_seed_id = "cursor_" ++ std.meta.fieldInfo(TimeToFixCursor, .seed_id).name,
+            .cursor_cycle = "cursor_" ++ std.meta.fieldInfo(TimeToFixCursor, .cycle).name,
         }),
         true,
         struct {
@@ -712,7 +737,19 @@ fn TimeToFix(seeds_sql: []const u8) type {
             fixed_at: types.DateTime,
             broken_duration_seconds: i64,
         },
-        TimeToFixCursor,
+        utils.meta.MergedStructs(&.{
+            utils.meta.MapFields(TimeToFixCursor, struct {
+                fn map(field: std.builtin.Type.StructField) std.builtin.Type.StructField {
+                    var mapped = field;
+                    mapped.name = "cursor_" ++ field.name;
+                    return mapped;
+                }
+            }.map),
+            struct {
+                at_gte: ?types.DateTime = null,
+                at_lt: ?types.DateTime = null,
+            },
+        }),
     );
 }
 

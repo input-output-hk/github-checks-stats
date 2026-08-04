@@ -58,7 +58,7 @@ const Labels = struct {
     pub const Metric = struct { metric: ComputedMetric };
 };
 
-const ComputedMetric = enum {
+pub const ComputedMetric = enum {
     commits,
     pull_requests,
     check_suites,
@@ -149,14 +149,11 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, comptime opts: m.RegistryO
     };
 }
 
-pub fn write(self: *const @This(), writer: *std.Io.Writer) !void {
+pub fn write(self: *@This(), writer: *std.Io.Writer) !void {
+    inline for (std.enums.values(ComputedMetric)) |metric|
+        try @field(self, @tagName(metric)).write(writer);
+
     try m.write(&.{
-        self.commits,
-        self.pull_requests,
-        self.check_suites,
-        self.check_runs,
-        self.branch_time_to_fix,
-        self.pull_request_time_to_fix,
         self.metric_computation_duration,
         self.scan_state,
         self.database,
@@ -167,42 +164,54 @@ pub fn write(self: *const @This(), writer: *std.Io.Writer) !void {
 
 pub const Scrape = struct {
     allocator: std.mem.Allocator,
-    mutex: std.Io.Mutex = .init,
 
     branch_time_to_fix_cursor: Db.queries.TimeToFixCursor = .{},
+    branch_time_to_fix_mutex: std.Io.Mutex = .init,
+
     pull_request_time_to_fix_cursor: Db.queries.TimeToFixCursor = .{},
+    pull_request_time_to_fix_mutex: std.Io.Mutex = .init,
+
+    pub const Range = struct {
+        gte: ?std.Io.Timestamp = null,
+        lt: ?std.Io.Timestamp = null,
+    };
 
     pub fn deinit(self: *@This()) void {
         self.branch_time_to_fix_cursor.deinit(self.allocator);
         self.pull_request_time_to_fix_cursor.deinit(self.allocator);
     }
 
-    /// Thread safe via mutex. If this function was not protected by a mutex, the following would apply:
-    /// Must never be called concurrently as that will mess up the metrics because some events could be observed twice.
-    pub fn refreshMetrics(self: *@This(), allocator: std.mem.Allocator, io: std.Io, metrics: *Metrics, db_conn: zqlite.Conn) !void {
-        try self.mutex.lock(io);
-        defer self.mutex.unlock(io);
-
+    pub fn refreshMetrics(
+        self: *@This(),
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        metrics: *Metrics,
+        db_conn: zqlite.Conn,
+        range: Range,
+    ) !void {
         inline for (std.enums.values(Metrics.ComputedMetric)) |metric|
-            try self.refreshComputedMetric(metric, allocator, io, metrics, db_conn);
+            try self.refreshComputedMetric(metric, allocator, io, metrics, db_conn, range);
 
         metrics.database.set(@intCast((try Db.queries.dbSize.query(allocator, db_conn, .{})).?.bytes));
     }
 
-    fn refreshComputedMetric(
+    pub fn refreshComputedMetric(
         self: *@This(),
-        // Would not need to be comptime but should compile away to cost of the switch.
+        // Would not need to be comptime but should compile away the cost of the switch.
         comptime metric: Metrics.ComputedMetric,
         allocator: std.mem.Allocator,
         io: std.Io,
         metrics: *Metrics,
         db_conn: zqlite.Conn,
+        range: Range,
     ) !void {
         const started_at = std.Io.Clock.Timestamp.now(io, .cpu_process);
 
         switch (metric) {
             .commits => {
-                var rows = try Db.queries.commitCountGroupedByRepo.queryIterator(allocator, db_conn, .{});
+                var rows = try Db.queries.commitCountGroupedByRepo.queryIterator(allocator, db_conn, .{
+                    // TODO take range
+                });
                 errdefer rows.deinit();
 
                 while (try rows.next(allocator)) |row| {
@@ -215,7 +224,9 @@ pub const Scrape = struct {
                 try rows.deinitErr();
             },
             .pull_requests => {
-                var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(allocator, db_conn, .{});
+                var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(allocator, db_conn, .{
+                    // TODO take range
+                });
                 errdefer rows.deinit();
 
                 while (try rows.next(allocator)) |row| {
@@ -229,7 +240,10 @@ pub const Scrape = struct {
                 try rows.deinitErr();
             },
             .check_suites => {
-                var rows = try Db.queries.checkSuiteCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{});
+                var rows = try Db.queries.checkSuiteCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{
+                    .created_at_gte = if (range.gte) |gte| .fromTimestamp(gte) else null,
+                    .updated_at_lt = if (range.lt) |lt| .fromTimestamp(lt) else null,
+                });
                 errdefer rows.deinit();
 
                 while (try rows.next(allocator)) |row| {
@@ -244,7 +258,10 @@ pub const Scrape = struct {
                 try rows.deinitErr();
             },
             .check_runs => {
-                var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{});
+                var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{
+                    .started_at_gte = if (range.gte) |gte| .fromTimestamp(gte) else null,
+                    .completed_at_lt = if (range.lt) |lt| .fromTimestamp(lt) else null,
+                });
                 errdefer rows.deinit();
 
                 while (try rows.next(allocator)) |row| {
@@ -259,7 +276,18 @@ pub const Scrape = struct {
                 try rows.deinitErr();
             },
             .branch_time_to_fix => {
-                var rows = try Db.queries.branchTimeToFix.queryIterator(allocator, db_conn, self.branch_time_to_fix_cursor);
+                try self.branch_time_to_fix_mutex.lock(io);
+                defer self.branch_time_to_fix_mutex.unlock(io);
+
+                var rows = try Db.queries.branchTimeToFix.queryIterator(allocator, db_conn, .{
+                    .cursor_fixed_at = self.branch_time_to_fix_cursor.fixed_at,
+                    .cursor_repo_id = self.branch_time_to_fix_cursor.repo_id,
+                    .cursor_app_id = self.branch_time_to_fix_cursor.app_id,
+                    .cursor_seed_id = self.branch_time_to_fix_cursor.seed_id,
+                    .cursor_cycle = self.branch_time_to_fix_cursor.cycle,
+                    .at_gte = if (range.gte) |gte| .fromTimestamp(gte) else null,
+                    .at_lt = if (range.lt) |lt| .fromTimestamp(lt) else null,
+                });
                 errdefer rows.deinit();
 
                 while (try rows.next(allocator)) |row| {
@@ -295,7 +323,18 @@ pub const Scrape = struct {
                 try rows.deinitErr();
             },
             .pull_request_time_to_fix => {
-                var rows = try Db.queries.pullRequestTimeToFix.queryIterator(allocator, db_conn, self.pull_request_time_to_fix_cursor);
+                try self.pull_request_time_to_fix_mutex.lock(io);
+                defer self.pull_request_time_to_fix_mutex.unlock(io);
+
+                var rows = try Db.queries.pullRequestTimeToFix.queryIterator(allocator, db_conn, .{
+                    .cursor_fixed_at = self.pull_request_time_to_fix_cursor.fixed_at,
+                    .cursor_repo_id = self.pull_request_time_to_fix_cursor.repo_id,
+                    .cursor_app_id = self.pull_request_time_to_fix_cursor.app_id,
+                    .cursor_seed_id = self.pull_request_time_to_fix_cursor.seed_id,
+                    .cursor_cycle = self.pull_request_time_to_fix_cursor.cycle,
+                    .at_gte = if (range.gte) |gte| .fromTimestamp(gte) else null,
+                    .at_lt = if (range.lt) |lt| .fromTimestamp(lt) else null,
+                });
                 errdefer rows.deinit();
 
                 while (try rows.next(allocator)) |row| {

@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const args = @import("args");
 const httpz = @import("httpz");
 const utils = @import("utils");
+const m_ = @import("metrics");
 const zeit = @import("zeit");
 const zqlite = @import("zqlite");
 const zqlite_typed = @import("zqlite-typed");
@@ -12,6 +13,10 @@ const zretry = @import("zretry");
 const api = @import("api.zig");
 const Db = @import("Db.zig");
 const Metrics = @import("Metrics.zig");
+
+const metric_opts = m_.RegistryOpts{
+    .prefix = "github_",
+};
 
 pub fn main(init: std.process.Init) !void {
     const Options = struct {
@@ -240,9 +245,7 @@ pub fn start(
     var metrics = if (switch (config) {
         inline else => |mode| mode.metrics_listen,
     } != null)
-        try Metrics.init(allocator, io, .{
-            .prefix = "github_",
-        })
+        try Metrics.init(allocator, io, metric_opts)
     else
         null;
     defer if (metrics) |*m| m.deinit();
@@ -275,6 +278,7 @@ pub fn start(
     const server_thread = if (server) |*s| server_thread: {
         var router = try s.router(.{});
         router.get("/metrics", serveGetMetrics, .{});
+        router.get("/metrics/history/:gte_unix_s/:interval_s/:lt_unix_s", serveGetMetricsHistory, .{});
 
         break :server_thread try s.listenInNewThread();
     } else null;
@@ -976,12 +980,332 @@ fn serveGetMetrics(ctx: ServerContext, req: *httpz.Request, res: *httpz.Response
     const db_conn = try ctx.db_pool.acquire(ctx.io);
     defer ctx.db_pool.release(ctx.io, db_conn);
 
-    try ctx.metrics_scrape.refreshMetrics(req.arena, ctx.io, ctx.metrics, db_conn);
+    try ctx.metrics_scrape.refreshMetrics(req.arena, ctx.io, ctx.metrics, db_conn, .{});
 
     res.content_type = .TEXT;
     try ctx.metrics.write(res.writer());
 
     try httpz.writeMetrics(res.writer());
+}
+
+fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.Response) !void {
+    const interval = std.Io.Duration.fromSeconds(try std.fmt.parseInt(i64, req.params.get("interval_s").?, 10));
+    const timestamp_gte = std.Io.Timestamp.fromNanoseconds(try std.fmt.parseInt(i96, req.params.get("gte_unix_s").?, 10) * std.time.ns_per_s);
+    const timestamp_lt = std.Io.Timestamp.fromNanoseconds(try std.fmt.parseInt(i96, req.params.get("lt_unix_s").?, 10) * std.time.ns_per_s);
+
+    const MetricsFormat = enum {
+        /// Timestamps are integers that represent milliseconds since the epoch.
+        prometheus,
+        /// Timestamps are floats that represent seconds since the epoch.
+        open_metrics,
+    };
+
+    const metrics_format = if (req.param("format")) |f|
+        std.meta.stringToEnum(MetricsFormat, f) orelse return error.InvalidMetricsFormat
+    else
+        .open_metrics;
+
+    const MetricPreamble = struct {
+        kind: Kind,
+        series: []const u8,
+        value: []const u8,
+        emitted: bool = false,
+
+        pub const Kind = enum {
+            HELP,
+            TYPE,
+            UNIT,
+
+            pub fn fromZqlite(_: std.mem.Allocator, cell: []const u8) !@This() {
+                return std.meta.stringToEnum(@This(), cell) orelse return error.InvalidTag;
+            }
+
+            pub fn toZqlite(self: @This(), _: std.mem.Allocator) ![]const u8 {
+                return @tagName(self);
+            }
+        };
+
+        const table = "metric_preamble";
+
+        const Column = std.meta.FieldEnum(@This());
+
+        pub const upsert = zqlite_typed.SimpleUpsert(table, @This(), true);
+
+        pub const select_by_series_and_emitted = zqlite_typed.SimpleSelectBy(table, @This(), .full, .initMany(&.{ .series, .emitted }), true);
+
+        pub fn format(self: @This(), writer: *std.Io.Writer) !void {
+            try writer.print("# {t} {s} {s}\n", .{
+                self.kind,
+                self.series,
+                self.value,
+            });
+        }
+
+        /// Returns null if it's a normal comment.
+        pub fn fromString(
+            /// Must be trimmed already, so must not contain
+            /// leading or trailing whitespace including newline.
+            line: []const u8,
+        ) ?@This() {
+            const kind_pos = std.mem.findNone(u8, line, "#" ++ std.ascii.whitespace).?;
+            const kind_end = (std.mem.findAnyPos(u8, line, kind_pos, &std.ascii.whitespace) orelse return null) - 1;
+
+            const kind = std.meta.stringToEnum(Kind, line[kind_pos .. kind_end + 1]) orelse
+                return null;
+
+            const series_pos = std.mem.findNonePos(u8, line, kind_end + 1, &std.ascii.whitespace).?;
+            const series_end = std.mem.findAnyPos(u8, line, series_pos, &std.ascii.whitespace).? - 1;
+
+            return .{
+                .kind = kind,
+                .series = line[series_pos .. series_end + 1],
+                .value = std.mem.trimStart(u8, line[series_end + 1 ..], &std.ascii.whitespace),
+            };
+        }
+
+        test fromString {
+            const series = "foo";
+            const help = "This is the description.";
+            const @"type" = "gauge";
+            const unit = "seconds";
+
+            const preamble_help = fromString("# HELP " ++ series ++ " " ++ help);
+            const preamble_type = fromString("# TYPE " ++ series ++ " " ++ @"type");
+            const preamble_unit = fromString("# UNIT " ++ series ++ " " ++ unit);
+            const preamble_comment = fromString("# foobar");
+
+            try std.testing.expectEqual(.HELP, preamble_help.?.kind);
+            try std.testing.expectEqualStrings(series, preamble_help.?.series);
+            try std.testing.expectEqualStrings(help, preamble_help.?.value);
+
+            try std.testing.expectEqual(.TYPE, preamble_type.?.kind);
+            try std.testing.expectEqualStrings(series, preamble_type.?.series);
+            try std.testing.expectEqualStrings(@"type", preamble_type.?.value);
+
+            try std.testing.expectEqual(.UNIT, preamble_unit.?.kind);
+            try std.testing.expectEqualStrings(series, preamble_unit.?.series);
+            try std.testing.expectEqualStrings(unit, preamble_unit.?.value);
+
+            try std.testing.expect(preamble_comment == null);
+        }
+    };
+
+    const MetricPoint = struct {
+        series: []const u8,
+        labels: ?[]const u8,
+        value: f64,
+        timestamp_us: i64,
+
+        const table = "metric_point";
+
+        const Column = std.meta.FieldEnum(@This());
+
+        pub const insert = zqlite_typed.SimpleInsert(table, @This());
+
+        pub const select_history = zqlite_typed.Query(
+            zqlite_typed.SimpleSelectBy(table, @This(), .full, .empty, true).sql ++
+                std.fmt.comptimePrint(
+                    \\
+                    \\ORDER BY {[series]f}, {[labels]f}, {[timestamp_us]f}
+                , .{
+                    .series = zqlite_typed.fmt.fmtIdentifier(@tagName(Column.series)),
+                    .labels = zqlite_typed.fmt.fmtIdentifier(@tagName(Column.labels)),
+                    .timestamp_us = zqlite_typed.fmt.fmtIdentifier(@tagName(Column.timestamp_us)),
+                }),
+            true,
+            @This(),
+            struct {},
+        );
+
+        const MetricPoint = @This();
+
+        pub const Fmt = struct {
+            metric_point: MetricPoint,
+            metrics_format: MetricsFormat,
+
+            pub fn format(self: @This(), writer: *std.Io.Writer) std.Io.Writer.Error!void {
+                try writer.print("{s}{s} {d} {d}\n", .{
+                    self.metric_point.series,
+                    self.metric_point.labels orelse "",
+                    self.metric_point.value,
+                    switch (self.metrics_format) {
+                        .prometheus => self.metric_point.timestamp_us * std.time.us_per_ms,
+                        .open_metrics => @as(f80, @floatFromInt(self.metric_point.timestamp_us)) / std.time.us_per_s,
+                    },
+                });
+            }
+        };
+
+        pub fn fmt(self: @This(), format: MetricsFormat) Fmt {
+            return .{
+                .metric_point = self,
+                .metrics_format = format,
+            };
+        }
+
+        pub fn fromString(
+            /// Must be trimmed already, so must not contain
+            /// leading or trailing whitespace including newline.
+            line: []const u8,
+            timestamp_us: i64,
+        ) std.fmt.ParseFloatError!@This() {
+            const series_len = std.mem.findAny(u8, line, std.ascii.whitespace ++ "{").?;
+            const labels_end = std.mem.findScalarLast(u8, line, '}');
+            const value_pos = std.mem.findLastAny(u8, line, &std.ascii.whitespace).? + 1;
+
+            return .{
+                .series = line[0..series_len],
+                .labels = if (labels_end) |end| line[series_len .. end + 1] else null,
+                .value = try std.fmt.parseFloat(f64, line[value_pos..]),
+                .timestamp_us = timestamp_us,
+            };
+        }
+
+        test fromString {
+            const series = "foo";
+            const labels =
+                \\{bar="bar",baz="baz"}
+            ;
+            const value_int = 1337;
+            const value_float = 1337.9;
+
+            const metric_prometheus = try fromString(std.fmt.comptimePrint("{s}{s} {d}", .{ series, labels, value_int }), 0);
+            const metric_openmetrics = try fromString(std.fmt.comptimePrint("{s}{s} {d}", .{ series, labels, value_float }), 0);
+
+            try std.testing.expectEqualStrings(series, metric_prometheus.series);
+            try std.testing.expectEqualStrings(series, metric_openmetrics.series);
+            try std.testing.expectEqualStrings(labels, metric_prometheus.labels.?);
+            try std.testing.expectEqualStrings(labels, metric_openmetrics.labels.?);
+            try std.testing.expectEqual(value_int, metric_prometheus.value);
+            try std.testing.expectEqual(value_float, metric_openmetrics.value);
+
+            const metric_simple = try fromString(std.fmt.comptimePrint("{s} {d}", .{ series, value_int }), 0);
+
+            try std.testing.expectEqualStrings(series, metric_simple.series);
+            try std.testing.expect(metric_simple.labels == null);
+            try std.testing.expectEqual(value_int, metric_simple.value);
+        }
+    };
+
+    const db_conn = try ctx.db_pool.acquire(ctx.io);
+    defer ctx.db_pool.release(ctx.io, db_conn);
+
+    try db_conn.transaction();
+    defer db_conn.rollback();
+
+    try db_conn.execNoArgs(std.fmt.comptimePrint(
+        \\CREATE TEMP TABLE {[mpa]f} (
+        \\  {[mpa_kind]f} TEXT NOT NULL CHECK ({[mpa_kind]f} IN ({[mpa_kind_values]f})),
+        \\  {[mpa_series]f} TEXT NOT NULL,
+        \\  {[mpa_value]f} TEXT NOT NULL,
+        \\  {[mpa_emitted]f} INT NOT NULL CHECK ({[mpa_emitted]f} IN (TRUE, FALSE)),
+        \\  UNIQUE ({[mpa_series]f}, {[mpa_kind]f})
+        \\) STRICT;
+        \\
+        \\CREATE TEMP TABLE {[mp]f} (
+        \\  {[mp_series]f} TEXT NOT NULL,
+        \\  {[mp_labels]f} TEXT,
+        \\  {[mp_value]f} REAL NOT NULL,
+        \\  {[mp_timestamp_us]f} INT NOT NULL
+        \\) STRICT;
+    , comptime .{
+        .mpa = zqlite_typed.fmt.fmtIdentifier(MetricPreamble.table),
+        .mpa_kind = zqlite_typed.fmt.fmtIdentifier(@tagName(MetricPreamble.Column.kind)),
+        .mpa_kind_values = zqlite_typed.fmt.fmtStringEnumSet(MetricPreamble.Kind, .full, .space),
+        .mpa_series = zqlite_typed.fmt.fmtIdentifier(@tagName(MetricPreamble.Column.series)),
+        .mpa_value = zqlite_typed.fmt.fmtIdentifier(@tagName(MetricPreamble.Column.value)),
+        .mpa_emitted = zqlite_typed.fmt.fmtIdentifier(@tagName(MetricPreamble.Column.emitted)),
+        .mp = zqlite_typed.fmt.fmtIdentifier(MetricPoint.table),
+        .mp_series = zqlite_typed.fmt.fmtIdentifier(@tagName(MetricPoint.Column.series)),
+        .mp_labels = zqlite_typed.fmt.fmtIdentifier(@tagName(MetricPoint.Column.labels)),
+        .mp_value = zqlite_typed.fmt.fmtIdentifier(@tagName(MetricPoint.Column.value)),
+        .mp_timestamp_us = zqlite_typed.fmt.fmtIdentifier(@tagName(MetricPoint.Column.timestamp_us)),
+    }));
+
+    const fns = struct {
+        fn insertFromText(allocator: std.mem.Allocator, conn: zqlite.Conn, text: []const u8, timestamp: std.Io.Timestamp) !void {
+            var lines = std.mem.splitScalar(u8, text, '\n');
+            while (lines.next()) |line_raw| {
+                const line = std.mem.trim(u8, line_raw, &std.ascii.whitespace);
+
+                if (line.len == 0)
+                    continue;
+
+                if (line[0] == '#') {
+                    if (MetricPreamble.fromString(line)) |metric_preamble|
+                        try MetricPreamble.upsert.exec(allocator, conn, metric_preamble);
+                } else try MetricPoint.insert.exec(
+                    allocator,
+                    conn,
+                    try MetricPoint.fromString(line, timestamp.toMicroseconds()),
+                );
+            }
+        }
+    };
+
+    var metrics = try Metrics.init(req.arena, ctx.io, metric_opts);
+    defer metrics.deinit();
+
+    var metrics_scrape = Metrics.Scrape{ .allocator = req.arena };
+    defer metrics_scrape.deinit();
+
+    var metric_family = std.Io.Writer.Allocating.init(req.arena);
+    defer metric_family.deinit();
+
+    var timestamp = timestamp_gte;
+    while (timestamp.toNanoseconds() < timestamp_lt.toNanoseconds()) : (timestamp = timestamp.addDuration(interval)) {
+        inline for (std.enums.values(Metrics.ComputedMetric)) |metric| {
+            try metrics_scrape.refreshComputedMetric(metric, req.arena, ctx.io, &metrics, db_conn, .{
+                .gte = timestamp_gte,
+                .lt = timestamp,
+            });
+
+            metric_family.clearRetainingCapacity();
+            try @field(metrics, @tagName(metric)).write(&metric_family.writer);
+
+            try fns.insertFromText(req.arena, db_conn, metric_family.written(), timestamp);
+        }
+
+        metric_family.clearRetainingCapacity();
+        try metrics.metric_computation_duration.write(&metric_family.writer);
+
+        try fns.insertFromText(req.arena, db_conn, metric_family.written(), timestamp);
+    }
+
+    res.content_type = .TEXT;
+
+    var history = try MetricPoint.select_history.queryIterator(req.arena, db_conn, .{});
+    errdefer history.deinit();
+
+    while (try history.next(req.arena)) |metric_point| {
+        var metric_preambles = try MetricPreamble.select_by_series_and_emitted.queryIterator(req.arena, db_conn, .{
+            .series = metric_point.series,
+            .emitted = false,
+        });
+        errdefer metric_preambles.deinit();
+
+        while (try metric_preambles.next(req.arena)) |row| {
+            const metric_preamble = MetricPreamble{
+                .kind = row.kind,
+                .series = row.series,
+                .value = row.value,
+                .emitted = true,
+            };
+
+            try res.writer().print("{f}", .{metric_preamble});
+
+            try MetricPreamble.upsert.exec(req.arena, db_conn, metric_preamble);
+        }
+
+        try metric_preambles.deinitErr();
+
+        try metric_point.fmt(metrics_format).format(res.writer());
+    }
+
+    try history.deinitErr();
+
+    if (metrics_format == .open_metrics)
+        try res.writer().writeAll("# EOF");
 }
 
 test {
