@@ -560,7 +560,7 @@ const Scan = struct {
                 repo_owner,
                 repo_name,
                 if (branch) |_| "#" else "",
-                if (branch) |b| b else "",
+                branch orelse "",
             });
 
             const repo = try zretry.zretry(api.queries.fetchRepoByFullName, .{
