@@ -10,7 +10,7 @@ CREATE TABLE "repository" (
 CREATE TABLE "pull_request" (
 	"id" TEXT PRIMARY KEY,
 	"repository" TEXT NOT NULL REFERENCES "repository",
-	"number" INTEGER NOT NULL CHECK ("number" > 0),
+	"number" INT NOT NULL CHECK ("number" > 0),
 	"state" TEXT NOT NULL CHECK ("state" IN (
 		'CLOSED',
 		'MERGED',
