@@ -72,7 +72,7 @@ fn migrate(conn: zqlite.Conn) !void {
     }
 }
 
-fn setJournalMode(conn: zqlite.Conn, comptime mode: enum {
+pub fn setJournalMode(conn: zqlite.Conn, comptime mode: enum {
     DELETE,
     TRUNCATE,
     PERSIST,
@@ -84,7 +84,7 @@ fn setJournalMode(conn: zqlite.Conn, comptime mode: enum {
     try zqlite_typed.logErr(conn, .execNoArgs, .{sql});
 }
 
-fn enableForeignKeys(conn: zqlite.Conn) !void {
+pub fn enableForeignKeys(conn: zqlite.Conn) !void {
     const sql = "PRAGMA foreign_keys = ON";
     try zqlite_typed.logErr(conn, .execNoArgs, .{sql});
 }
