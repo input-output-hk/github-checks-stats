@@ -1252,8 +1252,19 @@ fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.R
     var metric_family = std.Io.Writer.Allocating.init(req.arena);
     defer metric_family.deinit();
 
+    const scrapes = @divTrunc(timestamp_gte.durationTo(timestamp_lt).toNanoseconds(), interval.toNanoseconds());
+    std.log.info("dumping history from {f} to {f} with an interval of {f} in {d} scrapes…", .{
+        api.types.DateTime.fromTimestamp(timestamp_gte),
+        api.types.DateTime.fromTimestamp(timestamp_lt),
+        interval,
+        scrapes,
+    });
+
+    var scrape: @TypeOf(scrapes) = 0;
     var timestamp = timestamp_gte;
     while (timestamp.toNanoseconds() < timestamp_lt.toNanoseconds()) : (timestamp = timestamp.addDuration(interval)) {
+        defer scrape += 1;
+
         inline for (std.enums.values(Metrics.ComputedMetric)) |metric| {
             try metrics_scrape.refreshComputedMetric(metric, req.arena, ctx.io, &metrics, db_conn, .{
                 .gte = timestamp_gte,
@@ -1270,6 +1281,14 @@ fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.R
         try metrics.metric_computation_duration.write(&metric_family.writer);
 
         try fns.insertFromText(req.arena, db_conn, metric_family.written(), timestamp);
+
+        std.log.info("{d}/{d} history scrapes dumped (from {f} to {f} with an interval of {f})", .{
+            scrape + 1,
+            scrapes,
+            api.types.DateTime.fromTimestamp(timestamp_gte),
+            api.types.DateTime.fromTimestamp(timestamp_lt),
+            interval,
+        });
     }
 
     res.content_type = .TEXT;
