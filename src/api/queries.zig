@@ -71,20 +71,20 @@ pub const Ref = struct {
 pub fn fetchRef(
     allocator: std.mem.Allocator,
     client: *Client,
-    owner: []const u8,
-    name: []const u8,
+    repo_owner: []const u8,
+    repo_name: []const u8,
     ref: []const u8,
 ) !?Cloned(Ref) {
     const payload = try std.json.Stringify.valueAlloc(allocator, .{
         .query = "" ++
             \\query(
-            \\  $owner: String!
-            \\  $name: String!
+            \\  $repoOwner: String!
+            \\  $repoName: String!
             \\  $qualifiedName: String!
             \\) {
             \\  repository(
-            \\    owner: $owner
-            \\    name: $name
+            \\    owner: $repoOwner
+            \\    name: $repoName
             \\  ) {
             \\    ref(qualifiedName: $qualifiedName)
         ++ " " ++ comptime api.graphqlPretty(Ref, "  ", 3) ++ "\n" ++
@@ -92,8 +92,8 @@ pub fn fetchRef(
             \\}
         ,
         .variables = .{
-            .owner = owner,
-            .name = name,
+            .repoOwner = repo_owner,
+            .repoName = repo_name,
             .qualifiedName = ref,
         },
     }, .{});
@@ -303,13 +303,13 @@ pub fn fetchCommitHistoryByRepo(
     var iter = client.pageIterator(
         allocator,
         \\query(
-        \\  $repo_id: ID!
-        \\  $head_oid: GitObjectID!
+        \\  $repoId: ID!
+        \\  $headOid: GitObjectID!
         \\  $cursor: String
         \\) {
-        \\  node(id: $repo_id) {
+        \\  node(id: $repoId) {
         \\    ... on Repository {
-        \\      object(oid: $head_oid) {
+        \\      object(oid: $headOid) {
         \\        ... on Commit {
         \\          history(
     ++ std.fmt.comptimePrint("first: {d}\n", .{api.page_size}) ++
@@ -326,8 +326,8 @@ pub fn fetchCommitHistoryByRepo(
         \\}
     ,
         .{
-            .repo_id = repo_id,
-            .head_oid = head_oid,
+            .repoId = repo_id,
+            .headOid = head_oid,
         },
         struct {
             node: struct {
