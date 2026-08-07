@@ -192,7 +192,7 @@ pub const Scrape = struct {
         inline for (std.enums.values(Metrics.ComputedMetric)) |metric|
             try self.refreshComputedMetric(metric, allocator, io, metrics, db_conn, range);
 
-        metrics.database.set(@intCast((try Db.queries.dbSize.query(allocator, db_conn, .{})).?.bytes));
+        metrics.database.set(@intCast((try Db.queries.db_size.query(allocator, db_conn, .{})).?.bytes));
     }
 
     pub fn refreshComputedMetric(
@@ -209,7 +209,7 @@ pub const Scrape = struct {
 
         switch (metric) {
             .commits => {
-                var rows = try Db.queries.commitCountGroupedByRepo.queryIterator(allocator, db_conn, .{
+                var rows = try Db.queries.commit_count_grouped_by_repo.queryIterator(allocator, db_conn, .{
                     .committed_at_gte = if (range.gte) |gte| .fromTimestamp(gte) else null,
                     .committed_at_lt = if (range.lt) |lt| .fromTimestamp(lt) else null,
                 });
@@ -225,7 +225,7 @@ pub const Scrape = struct {
                 try rows.deinitErr();
             },
             .pull_requests => {
-                var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(allocator, db_conn, .{
+                var rows = try Db.queries.pull_request_count_grouped_by_repo_and_state.queryIterator(allocator, db_conn, .{
                     .created_at_gte = if (range.gte) |gte| .fromTimestamp(gte) else null,
                     .updated_at_lt = if (range.lt) |lt| .fromTimestamp(lt) else null,
                 });
@@ -242,7 +242,7 @@ pub const Scrape = struct {
                 try rows.deinitErr();
             },
             .check_suites => {
-                var rows = try Db.queries.checkSuiteCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{
+                var rows = try Db.queries.check_suite_count_grouped_by_app_and_repo_and_state.queryIterator(allocator, db_conn, .{
                     .created_at_gte = if (range.gte) |gte| .fromTimestamp(gte) else null,
                     .updated_at_lt = if (range.lt) |lt| .fromTimestamp(lt) else null,
                 });
@@ -260,7 +260,7 @@ pub const Scrape = struct {
                 try rows.deinitErr();
             },
             .check_runs => {
-                var rows = try Db.queries.checkRunCountGroupedByAppAndRepoAndState.queryIterator(allocator, db_conn, .{
+                var rows = try Db.queries.check_run_count_grouped_by_app_and_repo_and_state.queryIterator(allocator, db_conn, .{
                     .started_at_gte = if (range.gte) |gte| .fromTimestamp(gte) else null,
                     .completed_at_lt = if (range.lt) |lt| .fromTimestamp(lt) else null,
                 });
@@ -281,7 +281,7 @@ pub const Scrape = struct {
                 try self.branch_time_to_fix_mutex.lock(io);
                 defer self.branch_time_to_fix_mutex.unlock(io);
 
-                var rows = try Db.queries.branchTimeToFix.queryIterator(allocator, db_conn, .{
+                var rows = try Db.queries.branch_time_to_fix.queryIterator(allocator, db_conn, .{
                     .cursor_fixed_at = self.branch_time_to_fix_cursor.fixed_at,
                     .cursor_repo_id = self.branch_time_to_fix_cursor.repo_id,
                     .cursor_app_id = self.branch_time_to_fix_cursor.app_id,
@@ -328,7 +328,7 @@ pub const Scrape = struct {
                 try self.pull_request_time_to_fix_mutex.lock(io);
                 defer self.pull_request_time_to_fix_mutex.unlock(io);
 
-                var rows = try Db.queries.pullRequestTimeToFix.queryIterator(allocator, db_conn, .{
+                var rows = try Db.queries.pull_request_time_to_fix.queryIterator(allocator, db_conn, .{
                     .cursor_fixed_at = self.pull_request_time_to_fix_cursor.fixed_at,
                     .cursor_repo_id = self.pull_request_time_to_fix_cursor.repo_id,
                     .cursor_app_id = self.pull_request_time_to_fix_cursor.app_id,

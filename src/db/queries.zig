@@ -318,7 +318,7 @@ fn SeparatedStrings(separator: u8) type {
     };
 }
 
-pub const commitCountGroupedByRepo = Query(
+pub const commit_count_grouped_by_repo = Query(
     std.fmt.comptimePrint(
         \\SELECT
         \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
@@ -355,7 +355,7 @@ pub const commitCountGroupedByRepo = Query(
     },
 );
 
-pub const pullRequestCountGroupedByRepoAndState = Query(
+pub const pull_request_count_grouped_by_repo_and_state = Query(
     std.fmt.comptimePrint(
         \\SELECT
         \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
@@ -391,7 +391,7 @@ pub const pullRequestCountGroupedByRepoAndState = Query(
     },
 );
 
-pub const checkSuiteCountGroupedByAppAndRepoAndState = Query(
+pub const check_suite_count_grouped_by_app_and_repo_and_state = Query(
     std.fmt.comptimePrint(
         \\SELECT
         \\  app.{[app_slug]f},
@@ -435,7 +435,7 @@ pub const checkSuiteCountGroupedByAppAndRepoAndState = Query(
     },
 );
 
-pub const checkRunCountGroupedByAppAndRepoAndState = Query(
+pub const check_run_count_grouped_by_app_and_repo_and_state = Query(
     std.fmt.comptimePrint(
         \\SELECT
         \\  app.{[app_slug]f},
@@ -519,7 +519,7 @@ pub const TimeToFixCursor = struct {
 /// Limits recursion depth when scanning commit history.
 const time_to_fix_history_limit = 250;
 
-pub const branchTimeToFix = TimeToFix(
+pub const branch_time_to_fix = TimeToFix(
     std.fmt.comptimePrint(
         \\SELECT
         \\  {[ref_id]f}         AS seed_id,
@@ -539,7 +539,7 @@ pub const branchTimeToFix = TimeToFix(
     }),
 );
 
-pub const pullRequestTimeToFix = TimeToFix(
+pub const pull_request_time_to_fix = TimeToFix(
     std.fmt.comptimePrint(
         \\SELECT
         \\  {[pr_id]f}             AS seed_id,
@@ -785,7 +785,7 @@ fn TimeToFix(seeds_sql: []const u8) type {
     );
 }
 
-pub const dbSize = Query(
+pub const db_size = Query(
     \\SELECT page_size * page_count
     \\FROM pragma_page_size(), pragma_page_count()
 ,
