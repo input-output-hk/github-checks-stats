@@ -1278,9 +1278,10 @@ fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.R
 
     var scrape: @TypeOf(scrapes) = 0;
     var timestamp = timestamp_gte;
-    while (timestamp.toNanoseconds() < timestamp_lt.toNanoseconds()) : (timestamp = timestamp.addDuration(interval)) {
-        defer scrape += 1;
-
+    while (timestamp.toNanoseconds() < timestamp_lt.toNanoseconds()) : ({
+        timestamp = timestamp.addDuration(interval);
+        scrape += 1;
+    }) {
         inline for (std.enums.values(Metrics.ComputedMetric)) |metric| {
             try metrics_scrape.refreshComputedMetric(metric, req.arena, ctx.io, &metrics, db_conn, .{
                 .gte = timestamp_gte,
@@ -1298,12 +1299,13 @@ fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.R
 
         try fns.insertFromText(req.arena, db_conn, metric_family.written(), timestamp);
 
-        std.log.info("{d}/{d} history scrapes dumped (from {f} to {f} with an interval of {f})", .{
+        std.log.info("{d}/{d} history scrapes dumped (from {f} to {f} with an interval of {f}, currently at {f})", .{
             scrape + 1,
             scrapes,
             api.types.DateTime.fromTimestamp(timestamp_gte),
             api.types.DateTime.fromTimestamp(timestamp_lt),
             interval,
+            api.types.DateTime.fromTimestamp(timestamp),
         });
     }
 
