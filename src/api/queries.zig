@@ -74,7 +74,7 @@ pub fn fetchRef(
     owner: []const u8,
     name: []const u8,
     ref: []const u8,
-) !Cloned(Ref) {
+) !?Cloned(Ref) {
     const payload = try std.json.Stringify.valueAlloc(allocator, .{
         .query = "" ++
             \\query(
@@ -106,7 +106,10 @@ pub fn fetchRef(
     }, payload);
     defer response.deinit();
 
-    return try clone(allocator, response.value.repository.?.ref.?);
+    return if (response.value.repository.?.ref) |r|
+        try clone(allocator, r)
+    else
+        null;
 }
 
 pub const PullRequest = struct {

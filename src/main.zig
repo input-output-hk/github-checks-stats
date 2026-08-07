@@ -586,16 +586,19 @@ const Scan = struct {
             });
 
             if (branch) |b| {
-                const ref = try zretry.zretry(api.queries.fetchRef, .{
+                if (try zretry.zretry(api.queries.fetchRef, .{
                     self.allocator,
                     client,
                     repo.value.owner.login,
                     repo.value.name,
                     b,
-                }, retry_opts);
-                defer ref.deinit();
-
-                try self.scanRef(client, db_conn, retry_opts, repo.value, ref.value);
+                }, retry_opts)) |ref| {
+                    defer ref.deinit();
+                    try self.scanRef(client, db_conn, retry_opts, repo.value, ref.value);
+                } else {
+                    std.log.err("/{s}/{s}#{s} does not exist", .{ repo_owner, repo_name, b });
+                    return error.TargetNotFound;
+                }
             } else try self.scanRepository(client, db_conn, retry_opts, repo.value);
 
             self.progress.targets_idx += 1;
