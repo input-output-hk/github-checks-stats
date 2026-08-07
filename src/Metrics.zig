@@ -210,7 +210,8 @@ pub const Scrape = struct {
         switch (metric) {
             .commits => {
                 var rows = try Db.queries.commitCountGroupedByRepo.queryIterator(allocator, db_conn, .{
-                    // TODO take range
+                    .committed_at_gte = if (range.gte) |gte| .fromTimestamp(gte) else null,
+                    .committed_at_lt = if (range.lt) |lt| .fromTimestamp(lt) else null,
                 });
                 errdefer rows.deinit();
 
@@ -225,7 +226,8 @@ pub const Scrape = struct {
             },
             .pull_requests => {
                 var rows = try Db.queries.pullRequestCountGroupedByRepoAndState.queryIterator(allocator, db_conn, .{
-                    // TODO take range
+                    .created_at_gte = if (range.gte) |gte| .fromTimestamp(gte) else null,
+                    .updated_at_lt = if (range.lt) |lt| .fromTimestamp(lt) else null,
                 });
                 errdefer rows.deinit();
 

@@ -325,11 +325,18 @@ pub const commitCountGroupedByRepo = Query(
         \\  count(c.{[c_id]f})
         \\FROM {[c]f} c
         \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = c.{[c_repository]f}
+        \\WHERE
+        \\  (:authored_at_gte IS NULL OR datetime(c.{[c_authored_at]f}) >= datetime(:authored_at_gte))
+        \\  AND (:authored_at_lt IS NULL OR datetime(c.{[c_authored_at]f}) < datetime(:authored_at_lt))
+        \\  AND (:committed_at_gte IS NULL OR datetime(c.{[c_committed_at]f}) >= datetime(:committed_at_gte))
+        \\  AND (:committed_at_lt IS NULL OR datetime(c.{[c_committed_at]f}) < datetime(:committed_at_lt))
         \\GROUP BY repo.{[repo_id]f}
     , .{
         .c = fmtIdentifier(Commit.table),
         .c_id = fmtIdentifier(@tagName(Commit.Column.id)),
         .c_repository = fmtIdentifier(@tagName(Commit.Column.repository)),
+        .c_authored_at = fmtIdentifier(@tagName(Commit.Column.authored_at)),
+        .c_committed_at = fmtIdentifier(@tagName(Commit.Column.committed_at)),
         .repo = fmtIdentifier(Repository.table),
         .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
         .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
@@ -340,7 +347,12 @@ pub const commitCountGroupedByRepo = Query(
         repo: []const u8,
         count: i64,
     },
-    struct {},
+    struct {
+        authored_at_gte: ?types.DateTime = null,
+        authored_at_lt: ?types.DateTime = null,
+        committed_at_gte: ?types.DateTime = null,
+        committed_at_lt: ?types.DateTime = null,
+    },
 );
 
 pub const pullRequestCountGroupedByRepoAndState = Query(
@@ -351,12 +363,17 @@ pub const pullRequestCountGroupedByRepoAndState = Query(
         \\  count(pr.{[pr_id]f})
         \\FROM {[pr]f} pr
         \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = pr.{[pr_repository]f}
+        \\WHERE
+        \\  (:created_at_gte IS NULL OR datetime(pr.{[pr_created_at]f}) >= datetime(:created_at_gte))
+        \\  AND (:updated_at_lt IS NULL OR datetime(pr.{[pr_updated_at]f}) < datetime(:updated_at_lt))
         \\GROUP BY repo.{[repo_id]f}, pr.{[pr_state]f}
     , .{
         .pr = fmtIdentifier(PullRequest.table),
         .pr_id = fmtIdentifier(@tagName(PullRequest.Column.id)),
         .pr_repository = fmtIdentifier(@tagName(PullRequest.Column.repository)),
         .pr_state = fmtIdentifier(@tagName(PullRequest.Column.state)),
+        .pr_created_at = fmtIdentifier(@tagName(PullRequest.Column.created_at)),
+        .pr_updated_at = fmtIdentifier(@tagName(PullRequest.Column.updated_at)),
         .repo = fmtIdentifier(Repository.table),
         .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
         .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
@@ -368,7 +385,10 @@ pub const pullRequestCountGroupedByRepoAndState = Query(
         state: @FieldType(PullRequest, "state"),
         count: i64,
     },
-    struct {},
+    struct {
+        created_at_gte: ?types.DateTime = null,
+        updated_at_lt: ?types.DateTime = null,
+    },
 );
 
 pub const checkSuiteCountGroupedByAppAndRepoAndState = Query(
