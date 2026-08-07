@@ -644,9 +644,7 @@ fn TimeToFix(seeds_sql: []const u8) type {
             \\      seed_id,
             \\      seed_tag,
             \\      commit_id,
-            \\      -- all rows for one commit share the same lineage position;
-            \\      -- min() is just "the value".
-            \\      -- XXX seems we can just take `position` then without `min()`? as they're all the same anyway, so it doesn't matter which one is selected?
+            \\      -- All rows for one commit share the same lineage position; min() is just "the value".
             \\      min(position)     AS position,
             \\      max(completed_at) AS at,
             \\      CASE
@@ -672,6 +670,7 @@ fn TimeToFix(seeds_sql: []const u8) type {
             \\      repository,
             \\      app,
             \\      seed_id,
+            \\      -- All rows for one seed share the same seed tag; min() is just "the value".
             \\      min(seed_tag) AS seed_tag,
             \\      cycle,
             \\      min(CASE WHEN state != 'FIXED' THEN at END) AS broken_at,
