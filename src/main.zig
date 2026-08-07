@@ -1009,6 +1009,13 @@ fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.R
     const timestamp_gte = std.Io.Timestamp.fromNanoseconds(try std.fmt.parseInt(i96, req.params.get("gte_unix_s").?, 10) * std.time.ns_per_s);
     const timestamp_lt = std.Io.Timestamp.fromNanoseconds(try std.fmt.parseInt(i96, req.params.get("lt_unix_s").?, 10) * std.time.ns_per_s);
 
+    if (interval.toSeconds() == 0 or
+        timestamp_gte.toSeconds() > timestamp_lt.toSeconds())
+    {
+        res.setStatus(.bad_request);
+        return;
+    }
+
     const MetricsFormat = enum {
         /// Timestamps are integers that represent milliseconds since the epoch.
         prometheus,
@@ -1017,7 +1024,10 @@ fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.R
     };
 
     const metrics_format = if (req.param("format")) |f|
-        std.meta.stringToEnum(MetricsFormat, f) orelse return error.InvalidMetricsFormat
+        std.meta.stringToEnum(MetricsFormat, f) orelse {
+            res.setStatus(.bad_request);
+            return;
+        }
     else
         .open_metrics;
 
