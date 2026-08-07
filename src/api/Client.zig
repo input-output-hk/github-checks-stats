@@ -334,7 +334,7 @@ fn parseResponseImpl(self: *@This(), allocator: std.mem.Allocator, comptime Data
 
     var rate_limited = false;
     for (parsed.value.errors) |err| {
-        if (if (err.type) |t| t == .RATE_LIMIT else false) {
+        if (if (err.type) |t| t == .RATE_LIMITED else false) {
             rate_limited = true;
         } else {
             const err_json = try std.json.Stringify.valueAlloc(allocator, err, .{ .whitespace = .indent_tab });
@@ -403,7 +403,7 @@ const ResultError = struct {
     };
 
     pub const Type = union(enum) {
-        RATE_LIMIT,
+        RATE_LIMITED,
         _: []const u8,
 
         const Tag = std.meta.Tag(@This());
