@@ -17,8 +17,8 @@
             .hash = "zqlite-0.0.1-RWLaYyc7nABTzVzEpEMPi3qD8xJHi0a2ycNgL73XyEdt",
         },
         .zqlite_typed = .{
-            .url = "git+https://github.com/dermetfan/zqlite-typed.zig#51332c7f694bb996e55805f06623e07d0e4c3c28",
-            .hash = "zqlite_typed-0.0.0-la1GaLR1AAD1VCS0rUmtJdoRdqEgMPl6s5G8-EbMKzGd",
+            .url = "git+https://github.com/dermetfan/zqlite-typed.zig#9a42f973849dc59085624dee2d1bc3f124e5e856",
+            .hash = "zqlite_typed-0.0.0-la1GaKJ2AAD3bYQFCtK9jDidS1LQHNYKlIGxSTdP54gp",
         },
         .utils = .{
             .url = "git+https://github.com/dermetfan/utils.zig#973a007fcd13977cbbac008007432e4d96aea9b5",

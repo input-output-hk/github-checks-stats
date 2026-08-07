@@ -5,9 +5,10 @@ const zqlite_typed = @import("zqlite-typed");
 const Exec = zqlite_typed.Exec;
 const Query = zqlite_typed.Query;
 const SimpleSelectBy = zqlite_typed.SimpleSelectBy;
-const SimpleInsert = zqlite_typed.SimpleInsert;
-const SimpleUpsert = zqlite_typed.SimpleUpsert;
-const SimpleDelete = zqlite_typed.SimpleDelete;
+const simpleSelectBy = zqlite_typed.simpleSelectBy;
+const simpleInsert = zqlite_typed.simpleInsert;
+const simpleUpsert = zqlite_typed.simpleUpsert;
+const simpleDelete = zqlite_typed.simpleDelete;
 const fmtIdentifier = zqlite_typed.fmt.fmtIdentifier;
 const fmtString = zqlite_typed.fmt.fmtString;
 const fmtIdentifierEnumSet = zqlite_typed.fmt.fmtIdentifierEnumSet;
@@ -62,11 +63,11 @@ pub const Repository = struct {
 
     pub const Column = std.meta.FieldEnum(@This());
 
-    pub const insert = SimpleInsert(table, @This());
-    pub const upsert = SimpleUpsert(table, @This(), true);
+    pub const insert = simpleInsert(table, @This());
+    pub const upsert = simpleUpsert(table, @This(), true);
 
-    pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initOne(.id));
+    pub fn selectById(columns: std.enums.EnumSet(Column)) SimpleSelectBy(@This(), columns, .initOne(.id)) {
+        return simpleSelectBy(table, @This(), columns, .initOne(.id));
     }
 };
 
@@ -87,44 +88,43 @@ pub const PullRequest = struct {
 
     pub const Column = std.meta.FieldEnum(@This());
 
-    pub const insert = SimpleInsert(table, @This());
-    pub const upsert = SimpleUpsert(table, @This(), true);
+    pub const insert = simpleInsert(table, @This());
+    pub const upsert = simpleUpsert(table, @This(), true);
 
-    pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initOne(.id));
+    pub fn selectById(columns: std.enums.EnumSet(Column)) SimpleSelectBy(@This(), columns, .initOne(.id)) { // XXX test different .initOne() -> should error
+        return simpleSelectBy(table, @This(), columns, .initOne(.id));
     }
 
-    pub fn SelectByRepoAndStates(
-        columns: std.enums.EnumSet(Column),
-        states: std.enums.EnumSet(types.PullRequestState),
-    ) type {
-        return Query(
-            std.fmt.comptimePrint(
-                \\SELECT {[select]f}
-                \\FROM {[pr]f}
-                \\JOIN {[repo]f} ON {[repo]f}.{[repo_id]f} = {[pr]f}.{[pr_repository]f}
-                \\WHERE
-                \\  {[repo]f}.{[repo_owner]f} = ?
-                \\  AND {[repo]f}.{[repo_name]f} = ?
-                \\  AND {[pr]f}.{[pr_state]f} IN ({[states]f})
-            , .{
-                .select = fmtIdentifierEnumSet(Column, table, columns, .space),
-                .pr = fmtIdentifier(table),
-                .pr_repository = fmtIdentifier(@tagName(Column.repository)),
-                .pr_state = fmtIdentifier(@tagName(Column.state)),
-                .repo = fmtIdentifier(Repository.table),
-                .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
-                .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
-                .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
-                .states = fmtStringEnumSet(types.PullRequestState, states, .space),
-            }),
-            true,
-            utils.meta.SubStruct(@This(), columns),
-            struct {
-                @FieldType(Repository, "owner"),
-                @FieldType(Repository, "name"),
-            },
-        );
+    pub fn selectByRepoAndStates(
+        comptime columns: std.enums.EnumSet(Column),
+        comptime states: std.enums.EnumSet(types.PullRequestState),
+    ) Query(
+        true,
+        utils.meta.SubStruct(@This(), columns),
+        struct {
+            @FieldType(Repository, "owner"),
+            @FieldType(Repository, "name"),
+        },
+    ) {
+        return .{ .sql = std.fmt.comptimePrint(
+            \\SELECT {[select]f}
+            \\FROM {[pr]f}
+            \\JOIN {[repo]f} ON {[repo]f}.{[repo_id]f} = {[pr]f}.{[pr_repository]f}
+            \\WHERE
+            \\  {[repo]f}.{[repo_owner]f} = ?
+            \\  AND {[repo]f}.{[repo_name]f} = ?
+            \\  AND {[pr]f}.{[pr_state]f} IN ({[states]f})
+        , comptime .{
+            .select = fmtIdentifierEnumSet(Column, table, columns, .space),
+            .pr = fmtIdentifier(table),
+            .pr_repository = fmtIdentifier(@tagName(Column.repository)),
+            .pr_state = fmtIdentifier(@tagName(Column.state)),
+            .repo = fmtIdentifier(Repository.table),
+            .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
+            .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
+            .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
+            .states = fmtStringEnumSet(types.PullRequestState, states, .space),
+        }) };
     }
 };
 
@@ -139,15 +139,15 @@ pub const Commit = struct {
 
     pub const Column = std.meta.FieldEnum(@This());
 
-    pub const insert = SimpleInsert(table, @This());
-    pub const upsert = SimpleUpsert(table, @This(), true);
+    pub const insert = simpleInsert(table, @This());
+    pub const upsert = simpleUpsert(table, @This(), true);
 
-    pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initOne(.id), false);
+    pub fn selectById(comptime columns: std.enums.EnumSet(Column)) SimpleSelectBy(false, @This(), columns, .initOne(.id)) {
+        return simpleSelectBy(table, false, @This(), columns, .initOne(.id));
     }
 
-    pub fn SelectByRepoAndOid(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initMany(&.{ .repository, .oid }), false);
+    pub fn selectByRepoAndOid(comptime columns: std.enums.EnumSet(Column)) SimpleSelectBy(false, @This(), columns, .initMany(&.{ .repository, .oid })) {
+        return simpleSelectBy(table, false, @This(), columns, .initMany(&.{ .repository, .oid }));
     }
 
     pub const Parent = struct {
@@ -159,11 +159,11 @@ pub const Commit = struct {
 
         pub const Column = std.meta.FieldEnum(@This());
 
-        pub const insert = SimpleInsert(@This().table, @This());
-        pub const upsert = SimpleUpsert(@This().table, @This(), false);
+        pub const insert = simpleInsert(@This().table, @This());
+        pub const upsert = simpleUpsert(@This().table, @This(), false);
 
-        pub fn SelectById(columns: std.enums.EnumSet(@This().Column)) type {
-            return SimpleSelectBy(@This().table, @This(), columns, .initMany(&.{ .commit, .index }));
+        pub fn selectById(columns: std.enums.EnumSet(@This().Column)) SimpleSelectBy(@This(), columns, .initMany(&.{ .commit, .index })) {
+            return simpleSelectBy(@This().table, @This(), columns, .initMany(&.{ .commit, .index }));
         }
     };
 };
@@ -179,11 +179,11 @@ pub const Ref = struct {
 
     pub const Column = std.meta.FieldEnum(@This());
 
-    pub const insert = SimpleInsert(table, @This());
-    pub const upsert = SimpleUpsert(table, @This(), true);
+    pub const insert = simpleInsert(table, @This());
+    pub const upsert = simpleUpsert(table, @This(), true);
 
-    pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initOne(.id));
+    pub fn selectById(columns: std.enums.EnumSet(Column)) SimpleSelectBy(@This(), columns, .initOne(.id)) {
+        return simpleSelectBy(table, @This(), columns, .initOne(.id));
     }
 };
 
@@ -198,11 +198,11 @@ pub const App = struct {
 
     pub const Column = std.meta.FieldEnum(@This());
 
-    pub const insert = SimpleInsert(table, @This());
-    pub const upsert = SimpleUpsert(table, @This(), true);
+    pub const insert = simpleInsert(table, @This());
+    pub const upsert = simpleUpsert(table, @This(), true);
 
-    pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initOne(.id));
+    pub fn selectById(columns: std.enums.EnumSet(Column)) SimpleSelectBy(@This(), columns, .initOne(.id)) {
+        return simpleSelectBy(table, @This(), columns, .initOne(.id));
     }
 };
 
@@ -220,11 +220,11 @@ pub const CheckSuite = struct {
 
     pub const Column = std.meta.FieldEnum(@This());
 
-    pub const insert = SimpleInsert(table, @This());
-    pub const upsert = SimpleUpsert(table, @This(), true);
+    pub const insert = simpleInsert(table, @This());
+    pub const upsert = simpleUpsert(table, @This(), true);
 
-    pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initOne(.id), false);
+    pub fn selectById(comptime columns: std.enums.EnumSet(Column)) SimpleSelectBy(false, @This(), columns, .initOne(.id)) {
+        return simpleSelectBy(table, false, @This(), columns, .initOne(.id));
     }
 };
 
@@ -242,11 +242,11 @@ pub const CheckRun = struct {
 
     pub const Column = std.meta.FieldEnum(@This());
 
-    pub const insert = SimpleInsert(table, @This());
-    pub const upsert = SimpleUpsert(table, @This(), true);
+    pub const insert = simpleInsert(table, @This());
+    pub const upsert = simpleUpsert(table, @This(), true);
 
-    pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initOne(.id));
+    pub fn selectById(columns: std.enums.EnumSet(Column)) SimpleSelectBy(@This(), columns, .initOne(.id)) {
+        return simpleSelectBy(table, @This(), columns, .initOne(.id));
     }
 };
 
@@ -267,24 +267,21 @@ pub const Scan = struct {
     /// All columns meant to be set by the application, so all except `updated_at`.
     const app_columns = std.enums.EnumSet(Column).full.differenceWith(.initOne(.updated_at));
 
-    pub const insert = SimpleInsert(table, utils.meta.SubStruct(@This(), app_columns));
-    pub const upsert = SimpleUpsert(table, utils.meta.SubStruct(@This(), app_columns), true);
-    pub const delete = SimpleDelete(table, utils.meta.SubStruct(@This(), .initMany(&.{ .targets, .historical })));
+    pub const insert = simpleInsert(table, utils.meta.SubStruct(@This(), app_columns));
+    pub const upsert = simpleUpsert(table, utils.meta.SubStruct(@This(), app_columns), true);
+    pub const delete = simpleDelete(table, utils.meta.SubStruct(@This(), .initMany(&.{ .targets, .historical })));
 
-    pub const delete_expired = Exec(
-        std.fmt.comptimePrint(
-            \\DELETE FROM {[scan]f}
-            \\WHERE (julianday('now') - julianday({[updated_at]f})) * {[s_per_day]d} > ?
-        , .{
-            .scan = fmtIdentifier(table),
-            .updated_at = fmtIdentifier(@tagName(Column.updated_at)),
-            .s_per_day = std.time.s_per_day,
-        }),
-        struct { i64 },
-    );
+    pub const delete_expired = Exec(struct { i64 }){ .sql = std.fmt.comptimePrint(
+        \\DELETE FROM {[scan]f}
+        \\WHERE (julianday('now') - julianday({[updated_at]f})) * {[s_per_day]d} > ?
+    , .{
+        .scan = fmtIdentifier(table),
+        .updated_at = fmtIdentifier(@tagName(Column.updated_at)),
+        .s_per_day = std.time.s_per_day,
+    }) };
 
-    pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
-        return SimpleSelectBy(table, @This(), columns, .initMany(&.{ .targets, .historical }), false);
+    pub fn selectById(comptime columns: std.enums.EnumSet(Column)) SimpleSelectBy(false, @This(), columns, .initMany(&.{ .targets, .historical })) {
+        return simpleSelectBy(table, false, @This(), columns, .initMany(&.{ .targets, .historical }));
     }
 };
 
@@ -319,29 +316,6 @@ fn SeparatedStrings(separator: u8) type {
 }
 
 pub const commit_count_grouped_by_repo = Query(
-    std.fmt.comptimePrint(
-        \\SELECT
-        \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
-        \\  count(c.{[c_id]f})
-        \\FROM {[c]f} c
-        \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = c.{[c_repository]f}
-        \\WHERE
-        \\  (:authored_at_gte IS NULL OR c.{[c_authored_at]f} >= :authored_at_gte)
-        \\  AND (:authored_at_lt IS NULL OR c.{[c_authored_at]f} < :authored_at_lt)
-        \\  AND (:committed_at_gte IS NULL OR c.{[c_committed_at]f} >= :committed_at_gte)
-        \\  AND (:committed_at_lt IS NULL OR c.{[c_committed_at]f} < :committed_at_lt)
-        \\GROUP BY repo.{[repo_id]f}
-    , .{
-        .c = fmtIdentifier(Commit.table),
-        .c_id = fmtIdentifier(@tagName(Commit.Column.id)),
-        .c_repository = fmtIdentifier(@tagName(Commit.Column.repository)),
-        .c_authored_at = fmtIdentifier(@tagName(Commit.Column.authored_at)),
-        .c_committed_at = fmtIdentifier(@tagName(Commit.Column.committed_at)),
-        .repo = fmtIdentifier(Repository.table),
-        .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
-        .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
-        .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
-    }),
     true,
     struct {
         repo: []const u8,
@@ -353,32 +327,31 @@ pub const commit_count_grouped_by_repo = Query(
         committed_at_gte: ?types.DateTime = null,
         committed_at_lt: ?types.DateTime = null,
     },
-);
+){ .sql = std.fmt.comptimePrint(
+    \\SELECT
+    \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
+    \\  count(c.{[c_id]f})
+    \\FROM {[c]f} c
+    \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = c.{[c_repository]f}
+    \\WHERE
+    \\  (:authored_at_gte IS NULL OR c.{[c_authored_at]f} >= :authored_at_gte)
+    \\  AND (:authored_at_lt IS NULL OR c.{[c_authored_at]f} < :authored_at_lt)
+    \\  AND (:committed_at_gte IS NULL OR c.{[c_committed_at]f} >= :committed_at_gte)
+    \\  AND (:committed_at_lt IS NULL OR c.{[c_committed_at]f} < :committed_at_lt)
+    \\GROUP BY repo.{[repo_id]f}
+, .{
+    .c = fmtIdentifier(Commit.table),
+    .c_id = fmtIdentifier(@tagName(Commit.Column.id)),
+    .c_repository = fmtIdentifier(@tagName(Commit.Column.repository)),
+    .c_authored_at = fmtIdentifier(@tagName(Commit.Column.authored_at)),
+    .c_committed_at = fmtIdentifier(@tagName(Commit.Column.committed_at)),
+    .repo = fmtIdentifier(Repository.table),
+    .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
+    .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
+    .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
+}) };
 
 pub const pull_request_count_grouped_by_repo_and_state = Query(
-    std.fmt.comptimePrint(
-        \\SELECT
-        \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
-        \\  pr.{[pr_state]f},
-        \\  count(pr.{[pr_id]f})
-        \\FROM {[pr]f} pr
-        \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = pr.{[pr_repository]f}
-        \\WHERE
-        \\  (:created_at_gte IS NULL OR pr.{[pr_created_at]f} >= :created_at_gte)
-        \\  AND (:updated_at_lt IS NULL OR pr.{[pr_updated_at]f} < :updated_at_lt)
-        \\GROUP BY repo.{[repo_id]f}, pr.{[pr_state]f}
-    , .{
-        .pr = fmtIdentifier(PullRequest.table),
-        .pr_id = fmtIdentifier(@tagName(PullRequest.Column.id)),
-        .pr_repository = fmtIdentifier(@tagName(PullRequest.Column.repository)),
-        .pr_state = fmtIdentifier(@tagName(PullRequest.Column.state)),
-        .pr_created_at = fmtIdentifier(@tagName(PullRequest.Column.created_at)),
-        .pr_updated_at = fmtIdentifier(@tagName(PullRequest.Column.updated_at)),
-        .repo = fmtIdentifier(Repository.table),
-        .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
-        .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
-        .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
-    }),
     true,
     struct {
         repo: []const u8,
@@ -389,39 +362,31 @@ pub const pull_request_count_grouped_by_repo_and_state = Query(
         created_at_gte: ?types.DateTime = null,
         updated_at_lt: ?types.DateTime = null,
     },
-);
+){ .sql = std.fmt.comptimePrint(
+    \\SELECT
+    \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
+    \\  pr.{[pr_state]f},
+    \\  count(pr.{[pr_id]f})
+    \\FROM {[pr]f} pr
+    \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = pr.{[pr_repository]f}
+    \\WHERE
+    \\  (:created_at_gte IS NULL OR pr.{[pr_created_at]f} >= :created_at_gte)
+    \\  AND (:updated_at_lt IS NULL OR pr.{[pr_updated_at]f} < :updated_at_lt)
+    \\GROUP BY repo.{[repo_id]f}, pr.{[pr_state]f}
+, .{
+    .pr = fmtIdentifier(PullRequest.table),
+    .pr_id = fmtIdentifier(@tagName(PullRequest.Column.id)),
+    .pr_repository = fmtIdentifier(@tagName(PullRequest.Column.repository)),
+    .pr_state = fmtIdentifier(@tagName(PullRequest.Column.state)),
+    .pr_created_at = fmtIdentifier(@tagName(PullRequest.Column.created_at)),
+    .pr_updated_at = fmtIdentifier(@tagName(PullRequest.Column.updated_at)),
+    .repo = fmtIdentifier(Repository.table),
+    .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
+    .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
+    .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
+}) };
 
 pub const check_suite_count_grouped_by_app_and_repo_and_state = Query(
-    std.fmt.comptimePrint(
-        \\SELECT
-        \\  app.{[app_slug]f},
-        \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
-        \\  coalesce(cs.{[cs_conclusion]f}, cs.{[cs_status]f}) AS state,
-        \\  count(cs.{[cs_id]f})
-        \\FROM {[cs]f} cs
-        \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = cs.{[cs_repo]f}
-        \\JOIN {[app]f} app ON app.{[app_id]f} = {[cs_app]f}
-        \\WHERE
-        \\  (:created_at_gte IS NULL OR cs.{[cs_created_at]f} >= :created_at_gte)
-        \\  AND (:updated_at_lt IS NULL OR cs.{[cs_updated_at]f} < :updated_at_lt)
-        \\GROUP BY repo.{[repo_id]f}, app.{[app_slug]f}, state
-    , .{
-        .app = fmtIdentifier(App.table),
-        .app_id = fmtIdentifier(@tagName(App.Column.id)),
-        .app_slug = fmtIdentifier(@tagName(App.Column.slug)),
-        .cs = fmtIdentifier(CheckSuite.table),
-        .cs_id = fmtIdentifier(@tagName(CheckSuite.Column.id)),
-        .cs_app = fmtIdentifier(@tagName(CheckSuite.Column.app)),
-        .cs_repo = fmtIdentifier(@tagName(CheckSuite.Column.repository)),
-        .cs_created_at = fmtIdentifier(@tagName(CheckSuite.Column.created_at)),
-        .cs_updated_at = fmtIdentifier(@tagName(CheckSuite.Column.updated_at)),
-        .cs_status = fmtIdentifier(@tagName(CheckSuite.Column.status)),
-        .cs_conclusion = fmtIdentifier(@tagName(CheckSuite.Column.conclusion)),
-        .repo = fmtIdentifier(Repository.table),
-        .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
-        .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
-        .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
-    }),
     true,
     struct {
         app_slug: @FieldType(App, "slug"),
@@ -433,43 +398,38 @@ pub const check_suite_count_grouped_by_app_and_repo_and_state = Query(
         created_at_gte: ?types.DateTime = null,
         updated_at_lt: ?types.DateTime = null,
     },
-);
+){ .sql = std.fmt.comptimePrint(
+    \\SELECT
+    \\  app.{[app_slug]f},
+    \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
+    \\  coalesce(cs.{[cs_conclusion]f}, cs.{[cs_status]f}) AS state,
+    \\  count(cs.{[cs_id]f})
+    \\FROM {[cs]f} cs
+    \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = cs.{[cs_repo]f}
+    \\JOIN {[app]f} app ON app.{[app_id]f} = {[cs_app]f}
+    \\WHERE
+    \\  (:created_at_gte IS NULL OR cs.{[cs_created_at]f} >= :created_at_gte)
+    \\  AND (:updated_at_lt IS NULL OR cs.{[cs_updated_at]f} < :updated_at_lt)
+    \\GROUP BY repo.{[repo_id]f}, app.{[app_slug]f}, state
+, .{
+    .app = fmtIdentifier(App.table),
+    .app_id = fmtIdentifier(@tagName(App.Column.id)),
+    .app_slug = fmtIdentifier(@tagName(App.Column.slug)),
+    .cs = fmtIdentifier(CheckSuite.table),
+    .cs_id = fmtIdentifier(@tagName(CheckSuite.Column.id)),
+    .cs_app = fmtIdentifier(@tagName(CheckSuite.Column.app)),
+    .cs_repo = fmtIdentifier(@tagName(CheckSuite.Column.repository)),
+    .cs_created_at = fmtIdentifier(@tagName(CheckSuite.Column.created_at)),
+    .cs_updated_at = fmtIdentifier(@tagName(CheckSuite.Column.updated_at)),
+    .cs_status = fmtIdentifier(@tagName(CheckSuite.Column.status)),
+    .cs_conclusion = fmtIdentifier(@tagName(CheckSuite.Column.conclusion)),
+    .repo = fmtIdentifier(Repository.table),
+    .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
+    .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
+    .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
+}) };
 
 pub const check_run_count_grouped_by_app_and_repo_and_state = Query(
-    std.fmt.comptimePrint(
-        \\SELECT
-        \\  app.{[app_slug]f},
-        \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
-        \\  coalesce(cr.{[cr_conclusion]f}, cr.{[cr_status]f}) AS state,
-        \\  count(cr.{[cr_id]f})
-        \\FROM {[cr]f} cr
-        \\JOIN {[cs]f} cs ON cs.{[cs_id]f} = cr.{[cr_suite]f}
-        \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = cs.{[cs_repo]f}
-        \\JOIN {[app]f} app ON app.{[app_id]f} = {[cs_app]f}
-        \\WHERE
-        \\  (:started_at_gte IS NULL OR cr.{[cr_started_at]f} >= :started_at_gte)
-        \\  AND (:completed_at_lt IS NULL OR cr.{[cr_completed_at]f} < :completed_at_lt)
-        \\GROUP BY repo.{[repo_id]f}, app.{[app_slug]f}, state
-    , .{
-        .app = fmtIdentifier(App.table),
-        .app_id = fmtIdentifier(@tagName(App.Column.id)),
-        .app_slug = fmtIdentifier(@tagName(App.Column.slug)),
-        .cs = fmtIdentifier(CheckSuite.table),
-        .cs_id = fmtIdentifier(@tagName(CheckSuite.Column.id)),
-        .cs_app = fmtIdentifier(@tagName(CheckSuite.Column.app)),
-        .cs_repo = fmtIdentifier(@tagName(CheckSuite.Column.repository)),
-        .cr = fmtIdentifier(CheckRun.table),
-        .cr_id = fmtIdentifier(@tagName(CheckRun.Column.id)),
-        .cr_suite = fmtIdentifier(@tagName(CheckRun.Column.suite)),
-        .cr_started_at = fmtIdentifier(@tagName(CheckRun.Column.started_at)),
-        .cr_completed_at = fmtIdentifier(@tagName(CheckRun.Column.completed_at)),
-        .cr_status = fmtIdentifier(@tagName(CheckRun.Column.status)),
-        .cr_conclusion = fmtIdentifier(@tagName(CheckRun.Column.conclusion)),
-        .repo = fmtIdentifier(Repository.table),
-        .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
-        .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
-        .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
-    }),
     true,
     struct {
         app_slug: @FieldType(App, "slug"),
@@ -481,7 +441,40 @@ pub const check_run_count_grouped_by_app_and_repo_and_state = Query(
         started_at_gte: ?types.DateTime = null,
         completed_at_lt: ?types.DateTime = null,
     },
-);
+){ .sql = std.fmt.comptimePrint(
+    \\SELECT
+    \\  app.{[app_slug]f},
+    \\  repo.{[repo_owner]f} || '/' || repo.{[repo_name]f},
+    \\  coalesce(cr.{[cr_conclusion]f}, cr.{[cr_status]f}) AS state,
+    \\  count(cr.{[cr_id]f})
+    \\FROM {[cr]f} cr
+    \\JOIN {[cs]f} cs ON cs.{[cs_id]f} = cr.{[cr_suite]f}
+    \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = cs.{[cs_repo]f}
+    \\JOIN {[app]f} app ON app.{[app_id]f} = {[cs_app]f}
+    \\WHERE
+    \\  (:started_at_gte IS NULL OR cr.{[cr_started_at]f} >= :started_at_gte)
+    \\  AND (:completed_at_lt IS NULL OR cr.{[cr_completed_at]f} < :completed_at_lt)
+    \\GROUP BY repo.{[repo_id]f}, app.{[app_slug]f}, state
+, .{
+    .app = fmtIdentifier(App.table),
+    .app_id = fmtIdentifier(@tagName(App.Column.id)),
+    .app_slug = fmtIdentifier(@tagName(App.Column.slug)),
+    .cs = fmtIdentifier(CheckSuite.table),
+    .cs_id = fmtIdentifier(@tagName(CheckSuite.Column.id)),
+    .cs_app = fmtIdentifier(@tagName(CheckSuite.Column.app)),
+    .cs_repo = fmtIdentifier(@tagName(CheckSuite.Column.repository)),
+    .cr = fmtIdentifier(CheckRun.table),
+    .cr_id = fmtIdentifier(@tagName(CheckRun.Column.id)),
+    .cr_suite = fmtIdentifier(@tagName(CheckRun.Column.suite)),
+    .cr_started_at = fmtIdentifier(@tagName(CheckRun.Column.started_at)),
+    .cr_completed_at = fmtIdentifier(@tagName(CheckRun.Column.completed_at)),
+    .cr_status = fmtIdentifier(@tagName(CheckRun.Column.status)),
+    .cr_conclusion = fmtIdentifier(@tagName(CheckRun.Column.conclusion)),
+    .repo = fmtIdentifier(Repository.table),
+    .repo_id = fmtIdentifier(@tagName(Repository.Column.id)),
+    .repo_owner = fmtIdentifier(@tagName(Repository.Column.owner)),
+    .repo_name = fmtIdentifier(@tagName(Repository.Column.name)),
+}) };
 
 pub const TimeToFixCursor = struct {
     fixed_at: ?types.DateTime = null,
@@ -519,7 +512,7 @@ pub const TimeToFixCursor = struct {
 /// Limits recursion depth when scanning commit history.
 const time_to_fix_history_limit = 250;
 
-pub const branch_time_to_fix = TimeToFix(
+pub const branch_time_to_fix = timeToFix(
     std.fmt.comptimePrint(
         \\SELECT
         \\  {[ref_id]f}         AS seed_id,
@@ -539,7 +532,7 @@ pub const branch_time_to_fix = TimeToFix(
     }),
 );
 
-pub const pull_request_time_to_fix = TimeToFix(
+pub const pull_request_time_to_fix = timeToFix(
     std.fmt.comptimePrint(
         \\SELECT
         \\  {[pr_id]f}             AS seed_id,
@@ -558,9 +551,36 @@ pub const pull_request_time_to_fix = TimeToFix(
     }),
 );
 
-fn TimeToFix(seeds_sql: []const u8) type {
-    return Query(
-        std.fmt.comptimePrint(
+fn timeToFix(seeds_sql: []const u8) Query(
+    true,
+    struct {
+        repo_id: types.Id,
+        repo_full: []const u8,
+        app_id: types.Id,
+        app_slug: []const u8,
+        seed_id: types.Id,
+        seed_tag: []const u8,
+        cycle: i64,
+        broken_at: types.DateTime,
+        fixed_at: types.DateTime,
+        broken_duration_seconds: i64,
+    },
+    utils.meta.MergedStructs(&.{
+        utils.meta.MapFields(TimeToFixCursor, struct {
+            fn map(field: std.builtin.Type.StructField) std.builtin.Type.StructField {
+                var mapped = field;
+                mapped.name = "cursor_" ++ field.name;
+                return mapped;
+            }
+        }.map),
+        struct {
+            at_gte: ?types.DateTime = null,
+            at_lt: ?types.DateTime = null,
+        },
+    }),
+) {
+    return .{
+        .sql = std.fmt.comptimePrint(
             \\WITH RECURSIVE
             \\  seeds AS (
             \\    {[seeds_sql]s}
@@ -756,40 +776,14 @@ fn TimeToFix(seeds_sql: []const u8) type {
             .cursor_seed_id = "cursor_" ++ std.meta.fieldInfo(TimeToFixCursor, .seed_id).name,
             .cursor_cycle = "cursor_" ++ std.meta.fieldInfo(TimeToFixCursor, .cycle).name,
         }),
-        true,
-        struct {
-            repo_id: types.Id,
-            repo_full: []const u8,
-            app_id: types.Id,
-            app_slug: []const u8,
-            seed_id: types.Id,
-            seed_tag: []const u8,
-            cycle: i64,
-            broken_at: types.DateTime,
-            fixed_at: types.DateTime,
-            broken_duration_seconds: i64,
-        },
-        utils.meta.MergedStructs(&.{
-            utils.meta.MapFields(TimeToFixCursor, struct {
-                fn map(field: std.builtin.Type.StructField) std.builtin.Type.StructField {
-                    var mapped = field;
-                    mapped.name = "cursor_" ++ field.name;
-                    return mapped;
-                }
-            }.map),
-            struct {
-                at_gte: ?types.DateTime = null,
-                at_lt: ?types.DateTime = null,
-            },
-        }),
-    );
+    };
 }
 
 pub const db_size = Query(
-    \\SELECT page_size * page_count
-    \\FROM pragma_page_size(), pragma_page_count()
-,
     false,
     struct { bytes: i64 },
     struct {},
-);
+){ .sql =
+    \\SELECT page_size * page_count
+    \\FROM pragma_page_size(), pragma_page_count()
+};

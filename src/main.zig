@@ -473,7 +473,7 @@ const Scan = struct {
     }
 
     pub fn loadFromDb(self: *@This(), db_conn: zqlite.Conn) !void {
-        if (try Db.queries.Scan.SelectById(.initMany(&.{
+        if (try Db.queries.Scan.selectById(.initMany(&.{
             .targets_idx,
             .prss_idx,
             .pr,
@@ -633,7 +633,7 @@ const Scan = struct {
         // They are still open in our database though,
         // so fetch them again to update them in the database.
         const prs_closed = if (!self.historical) prs_closed: {
-            var prs_db_open = try Db.queries.PullRequest.SelectByRepoAndStates(
+            var prs_db_open = try Db.queries.PullRequest.selectByRepoAndStates(
                 .initOne(.id),
                 .initOne(.OPEN),
             ).queryIterator(self.allocator, db_conn, .{
@@ -799,7 +799,7 @@ const Scan = struct {
         const commits_start_idx = self.progress.commit.findNextLogVanished(api.queries.Commit, commits.value);
 
         const commits_len = commits_len: for (commits.value[commits_start_idx..], commits_start_idx..) |commit, idx| {
-            const commit_known = if (try Db.queries.Commit.SelectByRepoAndOid(.initOne(.id)).query(self.allocator, db_conn, .{
+            const commit_known = if (try Db.queries.Commit.selectByRepoAndOid(.initOne(.id)).query(self.allocator, db_conn, .{
                 .repository = repo.id,
                 .oid = commit.oid,
             })) |db_commit| known: {
@@ -872,7 +872,7 @@ const Scan = struct {
         for (commits) |commit|
             for (commit.parents.nodes, 0..) |parent, idx| {
                 // Skip if we don't have the parent.
-                if (try Db.queries.Commit.SelectById(.initOne(.id)).query(allocator, db_conn, .{ .id = parent.id })) |row|
+                if (try Db.queries.Commit.selectById(.initOne(.id)).query(allocator, db_conn, .{ .id = parent.id })) |row|
                     zqlite_typed.freeStructFromRow(@TypeOf(row), allocator, row)
                 else
                     continue;
@@ -907,7 +907,7 @@ const Scan = struct {
 
         const check_suites_start_idx = self.progress.check_suite.findNextLogVanished(api.queries.CheckSuite, check_suites.value);
         for (check_suites.value[check_suites_start_idx..], check_suites_start_idx..) |check_suite, check_suites_idx| {
-            const check_suite_updated = if (try Db.queries.CheckSuite.SelectById(.initOne(.updated_at)).query(self.allocator, db_conn, .{
+            const check_suite_updated = if (try Db.queries.CheckSuite.selectById(.initOne(.updated_at)).query(self.allocator, db_conn, .{
                 .id = check_suite.id,
             })) |db_check_suite| check_suite_updated: {
                 defer zqlite_typed.freeStructFromRow(@TypeOf(db_check_suite), self.allocator, db_check_suite);
@@ -1055,9 +1055,9 @@ fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.R
 
         const Column = std.meta.FieldEnum(@This());
 
-        pub const upsert = zqlite_typed.SimpleUpsert(table, @This(), true);
+        pub const upsert = zqlite_typed.simpleUpsert(table, @This(), true);
 
-        pub const select_by_series_and_emitted = zqlite_typed.SimpleSelectBy(table, @This(), .full, .initMany(&.{ .series, .emitted }), true);
+        pub const select_by_series_and_emitted = zqlite_typed.simpleSelectBy(table, true, @This(), .full, .initMany(&.{ .series, .emitted }));
 
         pub fn format(self: @This(), writer: *std.Io.Writer) !void {
             try writer.print("# {t} {s} {s}\n", .{
@@ -1126,10 +1126,10 @@ fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.R
 
         const Column = std.meta.FieldEnum(@This());
 
-        pub const insert = zqlite_typed.SimpleInsert(table, @This());
+        pub const insert = zqlite_typed.simpleInsert(table, @This());
 
-        pub const select_history = zqlite_typed.Query(
-            zqlite_typed.SimpleSelectBy(table, @This(), .full, .empty, true).sql ++
+        pub const select_history = zqlite_typed.Query(true, @This(), struct {}){
+            .sql = zqlite_typed.simpleSelectBy(table, true, @This(), .full, .empty).sql ++
                 std.fmt.comptimePrint(
                     \\
                     \\ORDER BY {[series]f}, {[labels]f}, {[timestamp_us]f}
@@ -1138,10 +1138,7 @@ fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.R
                     .labels = zqlite_typed.fmt.fmtIdentifier(@tagName(Column.labels)),
                     .timestamp_us = zqlite_typed.fmt.fmtIdentifier(@tagName(Column.timestamp_us)),
                 }),
-            true,
-            @This(),
-            struct {},
-        );
+        };
 
         const MetricPoint = @This();
 
