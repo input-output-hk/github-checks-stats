@@ -234,7 +234,7 @@ pub fn start(
     defer db.deinit();
 
     const db_conn = try db.pool.acquire(io);
-    defer db.pool.release(io, db_conn);
+    defer db_conn.release(io);
 
     switch (config) {
         .serve => {},
@@ -994,7 +994,7 @@ const ServerContext = struct {
 
 fn serveGetMetrics(ctx: ServerContext, req: *httpz.Request, res: *httpz.Response) !void {
     const db_conn = try ctx.db_pool.acquire(ctx.io);
-    defer ctx.db_pool.release(ctx.io, db_conn);
+    defer db_conn.release(ctx.io);
 
     try ctx.metrics_scrape.refreshMetrics(req.arena, ctx.io, ctx.metrics, db_conn, .{});
 
@@ -1214,7 +1214,7 @@ fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.R
     };
 
     const db_conn = try ctx.db_pool.acquire(ctx.io);
-    defer ctx.db_pool.release(ctx.io, db_conn);
+    defer db_conn.release(ctx.io);
 
     try db_conn.transaction();
     defer db_conn.rollback();

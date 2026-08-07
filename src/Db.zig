@@ -30,7 +30,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, options: Options) !@This()
 
     {
         const conn = try self.pool.acquire(io);
-        defer self.pool.release(io, conn);
+        defer conn.release(io);
 
         try migrate(conn);
     }
