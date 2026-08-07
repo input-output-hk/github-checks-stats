@@ -1286,12 +1286,11 @@ fn serveGetMetricsHistory(ctx: ServerContext, req: *httpz.Request, res: *httpz.R
         scrapes,
     });
 
-    var scrape: @TypeOf(scrapes) = 0;
-    var timestamp = timestamp_gte;
-    while (timestamp.toNanoseconds() < timestamp_lt.toNanoseconds()) : ({
-        timestamp = timestamp.addDuration(interval);
-        scrape += 1;
-    }) {
+    std.debug.assert(scrapes <= std.math.maxInt(usize));
+    for (0..@intCast(scrapes)) |scrape| {
+        const timestamp = timestamp_gte.addDuration(.fromNanoseconds(interval.toNanoseconds() * scrape));
+        std.debug.assert(timestamp.toNanoseconds() < timestamp_lt.toNanoseconds());
+
         inline for (std.enums.values(Metrics.ComputedMetric)) |metric| {
             try metrics_scrape.refreshComputedMetric(metric, req.arena, ctx.io, &metrics, db_conn, .{
                 .gte = timestamp_gte,
