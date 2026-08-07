@@ -389,7 +389,7 @@ pub fn start(
                     m.scan_state.set(@intFromEnum(Metrics.ScanState.idle));
 
                 std.log.info("next scan in {f}", .{interval});
-                try std.Io.sleep(io, interval, .awake);
+                try std.Io.sleep(io, interval, .real);
             }
         },
     }
