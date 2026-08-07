@@ -53,13 +53,17 @@ pub const Repository = struct {
     id: types.Id,
     owner: []const u8,
     name: []const u8,
+    created_at: types.DateTime,
+    updated_at: types.DateTime,
+    archived_at: ?types.DateTime = null,
+    pushed_at: ?types.DateTime = null,
 
     const table = "repository";
 
     pub const Column = std.meta.FieldEnum(@This());
 
     pub const insert = SimpleInsert(table, @This());
-    pub const upsert = SimpleUpsert(table, @This(), false);
+    pub const upsert = SimpleUpsert(table, @This(), true);
 
     pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
         return SimpleSelectBy(table, @This(), columns, .initOne(.id));
@@ -73,6 +77,11 @@ pub const PullRequest = struct {
     state: types.PullRequestState,
     head_ref_oid: []const u8,
     merge_base_oid: ?[]const u8,
+    created_at: types.DateTime,
+    updated_at: types.DateTime,
+    published_at: ?types.DateTime = null,
+    merged_at: ?types.DateTime = null,
+    closed_at: ?types.DateTime = null,
 
     const table = "pull_request";
 
@@ -123,13 +132,15 @@ pub const Commit = struct {
     id: types.Id,
     repository: types.Id,
     oid: []const u8,
+    authored_at: types.DateTime,
+    committed_at: types.DateTime,
 
     const table = "commit";
 
     pub const Column = std.meta.FieldEnum(@This());
 
     pub const insert = SimpleInsert(table, @This());
-    pub const upsert = SimpleUpsert(table, @This(), false);
+    pub const upsert = SimpleUpsert(table, @This(), true);
 
     pub fn SelectById(columns: std.enums.EnumSet(Column)) type {
         return SimpleSelectBy(table, @This(), columns, .initOne(.id), false);
@@ -180,6 +191,8 @@ pub const App = struct {
     id: types.Id,
     slug: []const u8,
     name: []const u8,
+    created_at: types.DateTime,
+    updated_at: types.DateTime,
 
     const table = "app";
 

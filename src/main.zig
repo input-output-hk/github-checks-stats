@@ -579,6 +579,10 @@ const Scan = struct {
                 .id = repo.value.id,
                 .owner = repo.value.owner.login,
                 .name = repo.value.name,
+                .created_at = repo.value.createdAt,
+                .updated_at = repo.value.updatedAt,
+                .archived_at = repo.value.archivedAt,
+                .pushed_at = repo.value.pushedAt,
             });
 
             if (branch) |b| {
@@ -686,6 +690,11 @@ const Scan = struct {
                     .state = pr.state,
                     .head_ref_oid = pr.headRefOid,
                     .merge_base_oid = pr.mergeBaseOid(),
+                    .created_at = pr.createdAt,
+                    .updated_at = pr.updatedAt,
+                    .published_at = pr.publishedAt,
+                    .merged_at = pr.mergedAt,
+                    .closed_at = pr.closedAt,
                 });
         }
 
@@ -852,6 +861,8 @@ const Scan = struct {
                 .id = commit.id,
                 .repository = repo_id,
                 .oid = commit.oid,
+                .authored_at = commit.authoredDate,
+                .committed_at = commit.committedDate,
             });
 
         // Insert parents after the commits so the foreign keys work.
@@ -910,6 +921,8 @@ const Scan = struct {
                     .id = check_suite.app.id,
                     .slug = check_suite.app.slug,
                     .name = check_suite.app.name,
+                    .created_at = check_suite.app.createdAt,
+                    .updated_at = check_suite.app.updatedAt,
                 });
 
                 try Db.queries.CheckSuite.upsert.exec(self.allocator, db_conn, .{

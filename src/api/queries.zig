@@ -14,6 +14,10 @@ pub const Repository = struct {
     },
     name: []const u8,
     defaultBranchRef: ?Ref = null,
+    createdAt: types.DateTime,
+    updatedAt: types.DateTime,
+    archivedAt: ?types.DateTime = null,
+    pushedAt: ?types.DateTime = null,
 };
 
 pub fn fetchRepoByFullName(
@@ -111,6 +115,11 @@ pub const PullRequest = struct {
 
     number: types.Int,
     state: types.PullRequestState,
+    createdAt: types.DateTime,
+    updatedAt: types.DateTime,
+    publishedAt: ?types.DateTime = null,
+    mergedAt: ?types.DateTime = null,
+    closedAt: ?types.DateTime = null,
     headRefOid: []const u8,
     commits: struct {
         /// Either length 0 or 1.
@@ -257,6 +266,8 @@ pub const Commit = struct {
     resourcePath: []const u8,
 
     oid: []const u8,
+    authoredDate: types.DateTime,
+    committedDate: types.DateTime,
     parents: struct {
         nodes: []const struct {
             id: types.Id,
@@ -362,15 +373,19 @@ pub fn fetchCommitHistoryByRepo(
     return cloned;
 }
 
+pub const App = struct {
+    id: types.Id,
+    slug: []const u8,
+    name: []const u8,
+    createdAt: types.DateTime,
+    updatedAt: types.DateTime,
+};
+
 pub const CheckSuite = struct {
     id: types.Id,
     resourcePath: []const u8,
 
-    app: struct {
-        id: types.Id,
-        slug: []const u8,
-        name: []const u8,
-    },
+    app: App,
     status: types.CheckStatusState,
     conclusion: ?types.CheckConclusionState = null,
     createdAt: types.DateTime,
