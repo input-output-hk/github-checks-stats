@@ -326,10 +326,10 @@ pub const commitCountGroupedByRepo = Query(
         \\FROM {[c]f} c
         \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = c.{[c_repository]f}
         \\WHERE
-        \\  (:authored_at_gte IS NULL OR datetime(c.{[c_authored_at]f}) >= datetime(:authored_at_gte))
-        \\  AND (:authored_at_lt IS NULL OR datetime(c.{[c_authored_at]f}) < datetime(:authored_at_lt))
-        \\  AND (:committed_at_gte IS NULL OR datetime(c.{[c_committed_at]f}) >= datetime(:committed_at_gte))
-        \\  AND (:committed_at_lt IS NULL OR datetime(c.{[c_committed_at]f}) < datetime(:committed_at_lt))
+        \\  (:authored_at_gte IS NULL OR c.{[c_authored_at]f} >= :authored_at_gte)
+        \\  AND (:authored_at_lt IS NULL OR c.{[c_authored_at]f} < :authored_at_lt)
+        \\  AND (:committed_at_gte IS NULL OR c.{[c_committed_at]f} >= :committed_at_gte)
+        \\  AND (:committed_at_lt IS NULL OR c.{[c_committed_at]f} < :committed_at_lt)
         \\GROUP BY repo.{[repo_id]f}
     , .{
         .c = fmtIdentifier(Commit.table),
@@ -364,8 +364,8 @@ pub const pullRequestCountGroupedByRepoAndState = Query(
         \\FROM {[pr]f} pr
         \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = pr.{[pr_repository]f}
         \\WHERE
-        \\  (:created_at_gte IS NULL OR datetime(pr.{[pr_created_at]f}) >= datetime(:created_at_gte))
-        \\  AND (:updated_at_lt IS NULL OR datetime(pr.{[pr_updated_at]f}) < datetime(:updated_at_lt))
+        \\  (:created_at_gte IS NULL OR pr.{[pr_created_at]f} >= :created_at_gte)
+        \\  AND (:updated_at_lt IS NULL OR pr.{[pr_updated_at]f} < :updated_at_lt)
         \\GROUP BY repo.{[repo_id]f}, pr.{[pr_state]f}
     , .{
         .pr = fmtIdentifier(PullRequest.table),
@@ -402,8 +402,8 @@ pub const checkSuiteCountGroupedByAppAndRepoAndState = Query(
         \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = cs.{[cs_repo]f}
         \\JOIN {[app]f} app ON app.{[app_id]f} = {[cs_app]f}
         \\WHERE
-        \\  (:created_at_gte IS NULL OR datetime(cs.{[cs_created_at]f}) >= datetime(:created_at_gte))
-        \\  AND (:updated_at_lt IS NULL OR datetime(cs.{[cs_updated_at]f}) < datetime(:updated_at_lt))
+        \\  (:created_at_gte IS NULL OR cs.{[cs_created_at]f} >= :created_at_gte)
+        \\  AND (:updated_at_lt IS NULL OR cs.{[cs_updated_at]f} < :updated_at_lt)
         \\GROUP BY repo.{[repo_id]f}, app.{[app_slug]f}, state
     , .{
         .app = fmtIdentifier(App.table),
@@ -447,8 +447,8 @@ pub const checkRunCountGroupedByAppAndRepoAndState = Query(
         \\JOIN {[repo]f} repo ON repo.{[repo_id]f} = cs.{[cs_repo]f}
         \\JOIN {[app]f} app ON app.{[app_id]f} = {[cs_app]f}
         \\WHERE
-        \\  (:started_at_gte IS NULL OR datetime(cr.{[cr_started_at]f}) >= datetime(:started_at_gte))
-        \\  AND (:completed_at_lt IS NULL OR datetime(cr.{[cr_completed_at]f}) < datetime(:completed_at_lt))
+        \\  (:started_at_gte IS NULL OR cr.{[cr_started_at]f} >= :started_at_gte)
+        \\  AND (:completed_at_lt IS NULL OR cr.{[cr_completed_at]f} < :completed_at_lt)
         \\GROUP BY repo.{[repo_id]f}, app.{[app_slug]f}, state
     , .{
         .app = fmtIdentifier(App.table),
@@ -620,12 +620,12 @@ fn TimeToFix(seeds_sql: []const u8) type {
             \\    FROM history h
             \\    CROSS JOIN {[cs]f} cs ON
             \\      cs.{[cs_commit]f} = h.commit_id
-            \\      AND (:at_gte IS NULL OR datetime(cs.{[cs_created_at]f}) >= datetime(:at_gte))
-            \\      AND (:at_lt IS NULL OR datetime(cs.{[cs_updated_at]f}) < datetime(:at_lt))
+            \\      AND (:at_gte IS NULL OR cs.{[cs_created_at]f} >= :at_gte)
+            \\      AND (:at_lt IS NULL OR cs.{[cs_updated_at]f} < :at_lt)
             \\    CROSS JOIN {[cr]f} cr ON
             \\      cr.{[cr_suite]f} = cs.{[cs_id]f}
-            \\      AND (:at_gte IS NULL OR datetime(cr.{[cr_started_at]f}) >= datetime(:at_gte))
-            \\      AND (:at_lt IS NULL OR datetime(cr.{[cr_completed_at]f}) < datetime(:at_lt))
+            \\      AND (:at_gte IS NULL OR cr.{[cr_started_at]f} >= :at_gte)
+            \\      AND (:at_lt IS NULL OR cr.{[cr_completed_at]f} < :at_lt)
             \\    WHERE
             \\      cr.{[cr_status]f} = {[cr_status_COMPLETED]f}
             \\      AND cr.{[cr_completed_at]f} IS NOT NULL

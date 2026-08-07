@@ -4,10 +4,10 @@ CREATE TABLE "repository" (
 	"id" TEXT PRIMARY KEY,
 	"owner" TEXT NOT NULL,
 	"name" TEXT NOT NULL,
-	"created_at" TEXT NOT NULL, -- ISO8601
-	"updated_at" TEXT NOT NULL, -- ISO8601
-	"archived_at" TEXT, -- ISO8601
-	"pushed_at" TEXT, -- ISO8601
+	"created_at" TEXT NOT NULL CHECK ("created_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "created_at")),
+	"updated_at" TEXT NOT NULL CHECK ("updated_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "updated_at")),
+	"archived_at" TEXT CHECK ("archived_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "archived_at")),
+	"pushed_at" TEXT CHECK ("pushed_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "pushed_at")),
 	UNIQUE ("owner", "name")
 ) STRICT, WITHOUT ROWID;
 
@@ -23,11 +23,11 @@ CREATE TABLE "pull_request" (
 		'MERGED',
 		'OPEN'
 	)),
-	"created_at" TEXT NOT NULL, -- ISO8601
-	"updated_at" TEXT NOT NULL, -- ISO8601
-	"published_at" TEXT, -- ISO8601
-	"merged_at" TEXT, -- ISO8601
-	"closed_at" TEXT, -- ISO8601
+	"created_at" TEXT NOT NULL CHECK ("created_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "created_at")),
+	"updated_at" TEXT NOT NULL CHECK ("updated_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "updated_at")),
+	"published_at" TEXT CHECK ("published_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "published_at")),
+	"merged_at" TEXT CHECK ("merged_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "merged_at")),
+	"closed_at" TEXT CHECK ("closed_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "closed_at")),
 	"head_ref_oid" TEXT NOT NULL,
 	"merge_base_oid" TEXT, -- null if the PR has no commits
 	UNIQUE ("repository", "number")
@@ -40,8 +40,8 @@ CREATE TABLE "commit" (
 	"id" TEXT PRIMARY KEY,
 	"repository" TEXT NOT NULL REFERENCES "repository",
 	"oid" TEXT NOT NULL,
-	"authored_at" TEXT NOT NULL, -- ISO8601
-	"committed_at" TEXT NOT NULL, -- ISO8601
+	"authored_at" TEXT NOT NULL CHECK ("authored_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "authored_at")),
+	"committed_at" TEXT NOT NULL CHECK ("committed_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "committed_at")),
 	UNIQUE ("repository", "oid")
 ) STRICT, WITHOUT ROWID;
 
@@ -69,8 +69,8 @@ CREATE TABLE "app" (
 	"id" TEXT PRIMARY KEY,
 	"slug" TEXT NOT NULL UNIQUE,
 	"name" TEXT NOT NULL,
-	"created_at" TEXT NOT NULL, -- ISO8601
-	"updated_at" TEXT NOT NULL -- ISO8601
+	"created_at" TEXT NOT NULL CHECK ("created_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "created_at")),
+	"updated_at" TEXT NOT NULL CHECK ("updated_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "updated_at"))
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX "idx_app_created_at" ON "app" ("created_at");
@@ -81,8 +81,8 @@ CREATE TABLE "check_suite" (
 	"repository" TEXT NOT NULL REFERENCES "repository",
 	"commit" TEXT NOT NULL REFERENCES "commit",
 	"app" TEXT NOT NULL REFERENCES "app",
-	"created_at" TEXT NOT NULL, -- ISO8601
-	"updated_at" TEXT NOT NULL, -- ISO8601
+	"created_at" TEXT NOT NULL CHECK ("created_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "created_at")),
+	"updated_at" TEXT NOT NULL CHECK ("updated_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "updated_at")),
 	"status" TEXT NOT NULL CHECK ("status" IN (
 		'COMPLETED',
 		'IN_PROGRESS',
@@ -112,8 +112,8 @@ CREATE TABLE "check_run" (
 	"id" TEXT PRIMARY KEY,
 	"suite" TEXT NOT NULL REFERENCES "check_suite",
 	"name" TEXT NOT NULL,
-	"started_at" TEXT NOT NULL, -- ISO8601
-	"completed_at" TEXT, -- ISO8601
+	"started_at" TEXT NOT NULL CHECK ("started_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "started_at")),
+	"completed_at" TEXT CHECK ("completed_at" IS strftime('%Y-%m-%dT%H:%M:%fZ', "completed_at")),
 	"external_id" TEXT,
 	"status" TEXT NOT NULL CHECK ("status" IN (
 		'COMPLETED',

@@ -40,12 +40,17 @@ pub const DateTime = struct {
     }
 
     pub fn toZqlite(self: @This(), allocator: std.mem.Allocator) ![]const u8 {
-        return try std.fmt.allocPrint(allocator, "{f}", .{self});
+        // We store everything as UTC in the database.
+        return try std.fmt.allocPrint(
+            allocator,
+            "{f}",
+            .{@This(){ .inner = self.inner.instant().in(&zeit.utc).time() }},
+        );
     }
 
-    // TODO support time zones other than UTC
     pub fn format(self: @This(), writer: *std.Io.Writer) !void {
-        self.inner.gofmt(writer, "2006-01-02T15:04:05Z07:00") catch return error.WriteFailed;
+        var buf: ["1970-01-01T00:00:00.000+00:00".len]u8 = undefined;
+        try writer.writeAll(self.inner.bufPrint(&buf, .rfc3339) catch return error.WriteFailed);
     }
 };
 
